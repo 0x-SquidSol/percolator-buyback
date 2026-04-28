@@ -1,6 +1,6 @@
 # Autonomous Buyback Proposal
 
-A design proposal for a protocol-funded $PERCOLATOR buyback driven by surplus in the Percolator insurance fund. Bought tokens are paired with SOL and added to the canonical Raydium $PERCOLATOR/SOL pool, after which the LP receipt tokens are burned — permanently locking that liquidity. The buyback is the supply-side counterpart to the locker's demand-side fee discount, and the two together form the token's full utility loop. Implementation lands across `percolator`, `percolator-vault`, and `percolator-keeper`.
+A design proposal for a protocol-funded $PERCOLATOR buyback driven by surplus in the Percolator insurance fund. Bought tokens are paired with SOL and added to the canonical PumpSwap $PERCOLATOR/SOL pool, after which the LP receipt tokens are burned — permanently locking that liquidity. The buyback is the supply-side counterpart to the locker's demand-side fee discount, and the two together form the token's full utility loop. Implementation lands across `percolator`, `percolator-vault`, and `percolator-keeper`.
 
 This document is a proposal, not a spec. Approved parameters and the four-condition gate are decided. Plumbing details — slab aggregation, cranker authority, slice custody, canonical pool address — are explicitly flagged for dcccrypto to settle against the live `percolator-vault` and `percolator` code.
 
@@ -113,7 +113,7 @@ All four are compile-time constants in the `percolator` crate, mirroring how the
 
 `BUYBACK_FLOOR_GUARD` is listed for completeness — the floor itself remains an admin-set value on the vault, the buyback gate just reads it.
 
-The canonical Raydium $PERCOLATOR/SOL pool address is also a hardcoded constant on the program (the cranker reads it from the program rather than from a config file). It is open question §11 — the value depends on whether an existing pool is designated or a new one is created.
+The canonical PumpSwap $PERCOLATOR/SOL pool address is also a hardcoded constant on the program (the cranker reads it from the program rather than from a config file). The pool already exists from pump.fun's migration: `Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW`. dcccrypto to confirm before lock-in (see section 11).
 
 ## 5. Per-Event Behavior
 
@@ -131,15 +131,15 @@ Reads the buyback pool, executes the following sequence, then calls `settle_buyb
 
 1. **USDC → SOL** via Jupiter. Convert the entire slice to SOL. Slippage cost is minimal on this pair.
 2. **Split the SOL in half.** Half is reserved for the buy leg; the other half for the LP pair leg.
-3. **Buy $PERCOLATOR with half the SOL** on the canonical Raydium $PERCOLATOR/SOL pool.
-4. **Add liquidity.** Pair the bought $PERCOLATOR with the remaining SOL and deposit into the same Raydium pool. Receive LP tokens (the receipt for the deposit).
+3. **Buy $PERCOLATOR with half the SOL** on the canonical PumpSwap $PERCOLATOR/SOL pool.
+4. **Add liquidity.** Pair the bought $PERCOLATOR with the remaining SOL and deposit into the same PumpSwap pool. Receive LP tokens (the receipt for the deposit).
 5. **Burn the LP tokens.** Use SPL `Burn` to permanently destroy the LP receipt. The liquidity is now locked in the pool with no path back out — the LP fees that accrue on those tokens stay in the pool (since no holder exists to claim them), deepening the pool over time.
 6. **Call `settle_buyback`** with the trade results.
 
 ### 5.3 On-chain settlement (`settle_buyback`)
 
 Verifies that:
-- The supplied LP token mint matches the canonical Raydium pool's LP mint.
+- The supplied LP token mint matches the canonical PumpSwap pool's LP mint.
 - The reported `lp_burned_amount` was actually destroyed (Anchor account constraints check the LP token account is now empty or that the burn was atomic with the call).
 - The buyback pool is empty after settlement (the entire slice was consumed).
 
@@ -154,7 +154,7 @@ Then emits `LiquidityLocked` with `slice_usdc`, `sol_acquired`, `perc_bought`, `
 
 The on-chain handler's job ends at step 3 of section 5.1. The cranker round-trip in section 5.2 runs asynchronously — if the cranker stalls, the next buyback slot is still gated by `last_buyback_ts`, so a stuck pool does not compound. Recovery is "the cranker catches up," not a program-level rollback.
 
-A buyback event is intentionally split across two on-chain instructions (trigger, then settle) so the on-chain program never embeds DEX or AMM routing logic. This means a Jupiter or Raydium outage degrades the buyback gracefully: triggers still fire on schedule, settlement just queues until the swap and add-liquidity paths return.
+A buyback event is intentionally split across two on-chain instructions (trigger, then settle) so the on-chain program never embeds DEX or AMM routing logic. This means a Jupiter or PumpSwap outage degrades the buyback gracefully: triggers still fire on schedule, settlement just queues until the swap and add-liquidity paths return.
 
 ## 6. What Needs To Be Built, By Repo
 
@@ -170,25 +170,25 @@ A buyback event is intentionally split across two on-chain instructions (trigger
 
 - New instruction: `trigger_buyback`. Permissionless. Loads the insurance fund account, every market account (or a packed exposure summary — see section 11), the vault config, and `Clock`.
 - Wires those into `buyback_eligible`. On success, debits the fund, credits the buyback pool PDA, stamps `last_buyback_ts`, emits `BuybackTriggered`. On failure, returns the gate-specific error.
-- New instruction: `settle_buyback`. Called by the cranker after the off-chain round-trip lands LP tokens that have been burned. Verifies the LP mint matches the canonical Raydium pool's LP mint, that the cranker's reported `lp_burned_amount` was actually destroyed, and that the buyback pool is empty. Emits `LiquidityLocked`.
+- New instruction: `settle_buyback`. Called by the cranker after the off-chain round-trip lands LP tokens that have been burned. Verifies the LP mint matches the canonical PumpSwap pool's LP mint, that the cranker's reported `lp_burned_amount` was actually destroyed, and that the buyback pool is empty. Emits `LiquidityLocked`.
 - New PDA: the buyback pool account that holds the withdrawn slice between trigger and settle. Custody question flagged in section 11.
 - New persistent field on the vault config (or a dedicated `BuybackState` PDA): `last_buyback_ts: i64`. Append-only addition in the spirit of the locker's change protocol — never insert mid-struct, never reorder, never resize.
-- New constant on the program: the canonical Raydium $PERCOLATOR/SOL pool pubkey. Read by `settle_buyback` to verify the LP mint matches. Hardcoded — see section 11 for how this address is chosen.
+- New constant on the program: the canonical PumpSwap $PERCOLATOR/SOL pool pubkey (`Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW`, the pump.fun migration pool). Read by `settle_buyback` to verify the LP mint matches. Hardcoded — changing it requires a program upgrade.
 - New events: `BuybackTriggered` and `LiquidityLocked`. Both must be append-only within their own structure once shipped, same rule the locker's events follow.
 
 ### 6.3 `percolator-keeper` (cranker)
 
 - New crank loop: poll `trigger_buyback` eligibility every N seconds (60-120s feels right; the on-chain cooldown gate is the real ratelimit).
-- On a successful trigger, read the buyback pool and execute the section 5.2 sequence: USDC → SOL via Jupiter, SOL split, half-buy on Raydium, add-liquidity with the bought $PERC plus the remaining SOL, burn the LP receipt token, call `settle_buyback`.
+- On a successful trigger, read the buyback pool and execute the section 5.2 sequence: USDC → SOL via Jupiter, SOL split, half-buy on PumpSwap, add-liquidity with the bought $PERCOLATOR plus the remaining SOL, burn the LP receipt token, call `settle_buyback`.
 - Should be tolerant of being one of many crankers — the on-chain cooldown ensures only one trigger lands per 24h slot, the rest get a gate-failure error, log and move on.
 - Logging should distinguish "no event because gate X failed" from "no event because cooldown" — the former is informational, the latter is the steady state.
 - Each leg of the cranker sequence has its own slippage bound. If any leg exceeds its bound, the cranker aborts and surfaces an error. The trigger has already happened on-chain; the slice will sit in the pool until a successful round-trip clears it.
-- The cranker must be able to handle the case where the first invocation is the one that creates the canonical pool (if it does not exist at first run). See section 11 for the pool creation question.
+- The canonical pool already exists (`Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW`); the cranker assumes the pool is initialized and aborts cleanly if not. PumpSwap's add-liquidity instruction layout is the integration's load-bearing dependency — see section 11.
 
 ### 6.4 `percolator-indexer` (optional, recommended)
 
 - Decode `BuybackTriggered` and `LiquidityLocked`. Surface a "buybacks" feed.
-- Useful columns: timestamp, slice, ratio at trigger, exposure at trigger, $PERC bought, SOL paired, LP tokens burned, realized buy price.
+- Useful columns: timestamp, slice, ratio at trigger, exposure at trigger, $PERCOLATOR bought, SOL paired, LP tokens burned, realized buy price.
 - Filter rule mirrors the locker's: pin to the canonical vault pubkey, ignore any other vault under the program ID.
 - Cumulative-LP-burned and total-locked-liquidity-USD-equivalent are the headline metrics — useful for the launch site and for any external dashboard tracking the supply story.
 
@@ -205,7 +205,7 @@ A buyback event is intentionally split across two on-chain instructions (trigger
 
 - 10 bps is small enough that an erroneous trigger (oracle desync, market-account staleness, math bug) cannot meaningfully damage the fund in a single event.
 - It is large enough that, compounded daily across years, it produces a visible liquidity-lock signal — order of magnitude tens of bps per month at sustained eligibility.
-- Half of the 10 bps is the buy leg's market footprint on the Raydium pool; half is the LP pair leg. The buy-leg impact is therefore 5 bps of fund per event, smaller still than a pure-burn variant of the same proposal.
+- Half of the 10 bps is the buy leg's market footprint on the PumpSwap pool; half is the LP pair leg. The buy-leg impact is therefore 5 bps of fund per event, smaller still than a pure-burn variant of the same proposal.
 - Bounds the cranker's market impact: 10 bps of the insurance fund is a known-small order size relative to $PERCOLATOR's expected liquidity, especially as the locked pool itself deepens with each event.
 
 ### 7.3 Why 24h
@@ -230,7 +230,7 @@ A buyback event is intentionally split across two on-chain instructions (trigger
 
 - Pure burn destroys $PERCOLATOR supply directly but takes the protocol's USDC out of the system permanently with no continued utility.
 - LP-and-burn-LP achieves nearly the same effect on freely-tradeable supply — locked tokens cannot be sold by anyone, ever — while leaving the protocol's USDC inside a permanent on-chain liquidity pool.
-- The locked pool also accumulates trading fees from organic volume on every Raydium swap. Those fees are permanently stuck in the pool (the LP holders that would normally claim them have been burned), which means the locked liquidity grows over time even without new buybacks.
+- The locked pool also accumulates trading fees from organic volume on every PumpSwap swap. Those fees are permanently stuck in the pool (the LP holders that would normally claim them have been burned), which means the locked liquidity grows over time even without new buybacks.
 - For a microcap token with thin order books, deeper liquidity is meaningful trader UX. A pure-burn program would not provide that.
 - The narrative trade — "permanent locked liquidity" instead of "destroyed supply" — is slightly less legible but functionally equivalent for price effect, and strictly stronger on liquidity.
 
@@ -254,11 +254,11 @@ What goes wrong, and what stops it from compounding:
 - **Oracle desync (fund-denying direction).** A bad oracle inflates `oracle_price` and therefore `total_protocol_exposure`, failing the ratio gate when it should pass. This is the safe direction — false negatives (no buyback when one is warranted) are strictly preferred to false positives (buyback when fund is needed).
 - **Oracle desync (fund-permitting direction).** A stale or manipulated oracle deflates `oracle_price` and inflates the apparent ratio, passing the gate when it should not. Mitigation: the per-event 10 bps cap bounds single-event damage, the cooldown bounds compounding, and the haircut gate catches the case where the protocol is already paying for a real loss the oracle missed.
 - **Sandwich on the cranker round-trip.** A searcher front-runs the buy leg, the LP-add leg, or both. Mitigation: per-leg slippage bounds enforced by the keeper, the 24h cooldown that makes the schedule too irregular to systematically front-run, and the deepening of the locked pool itself (each event makes the pool harder to sandwich than the last).
-- **Impermanent loss against locked liquidity.** $PERCOLATOR moves significantly against SOL after liquidity is locked. The locked pool rebalances mechanically — if $PERC appreciates, the pool ends up holding more SOL and less $PERC than at deposit. This is not a bug; it is the standard AMM cost. The economic effect is "the protocol effectively sold some $PERC into strength via the LP," which is acceptable since the slice was protocol-funded surplus to begin with.
+- **Impermanent loss against locked liquidity.** $PERCOLATOR moves significantly against SOL after liquidity is locked. The locked pool rebalances mechanically — if $PERCOLATOR appreciates, the pool ends up holding more SOL and less $PERCOLATOR than at deposit. This is not a bug; it is the standard AMM cost. The economic effect is "the protocol effectively sold some $PERCOLATOR into strength via the LP," which is acceptable since the slice was protocol-funded surplus to begin with.
 - **Concurrent triggers.** Two crankers race to call `trigger_buyback`. Mitigation: atomic update of `last_buyback_ts` inside the handler — one wins, the other gets `CooldownActive`. Standard Solana account-write semantics handle this.
 - **Floor raised faster than fund grows.** Admin raises `insurance_floor` to a level above current balance. Mitigation: floor gate fails immediately, no buyback fires, fund accumulates until it crosses the new floor.
-- **Canonical Raydium pool deprecated or migrated.** Raydium retires the AMM version the canonical pool is in, or liquidity migrates to a deeper pool. Mitigation: program upgrade. The canonical pool address is hardcoded; if it must change, the upgrade is observable on-chain. There is no automatic "redirect."
-- **Pool creation race.** If the canonical pool does not exist at first run, two crankers may try to create it simultaneously. Mitigation: pool creation is idempotent at the Raydium program level — the first to land creates, the second sees the existing pool and continues.
+- **Canonical PumpSwap pool deprecated or migrated.** PumpSwap retires the AMM version the canonical pool is in, or liquidity migrates to a deeper pool. Mitigation: program upgrade. The canonical pool address is hardcoded; if it must change, the upgrade is observable on-chain. There is no automatic "redirect."
+- **PumpSwap maturity.** PumpSwap is newer and less battle-tested than older Solana AMMs. Mitigation: the canonical pool is the existing pump.fun migration pool with established volume and depth; no new pool is created. If a critical PumpSwap bug surfaced post-launch, the buyback could be paused via program upgrade pending resolution.
 - **Buyback math constants are wrong.** The thresholds turn out to be too aggressive or too conservative under live conditions. Mitigation: program upgrade. There is no shortcut; this is the price of hardcoding.
 
 ## 10. Composition With The Locker
@@ -266,7 +266,7 @@ What goes wrong, and what stops it from compounding:
 The locker and the buyback are designed to interlock without sharing accounts or PDAs. They live in different programs and coordinate only through the token's market price and the locked pool's depth.
 
 - **Locker** — locks float on the demand side. Tokens locked for fee discounts are off the freely-tradeable supply for at least one cycle, then the discount-end window. This is a soft sink: tokens come back when users unlock.
-- **Buyback** — locks supply and liquidity on the protocol side. Surplus insurance fund balance is converted to permanent locked liquidity in the canonical Raydium pool. This is a hard sink: tokens deposited cannot be sold by anyone, ever, and the pool deepens further from organic trading fees that are stuck inside it.
+- **Buyback** — locks supply and liquidity on the protocol side. Surplus insurance fund balance is converted to permanent locked liquidity in the canonical PumpSwap pool. This is a hard sink: tokens deposited cannot be sold by anyone, ever, and the pool deepens further from organic trading fees that are stuck inside it.
 
 Together they bracket the supply story: discount-driven locking removes float while protocol revenue is being earned, buyback-driven liquidity locking permanently anchors supply and improves market depth in proportion to how over-collateralized the protocol has become. Neither depends on the other to function — the locker works on a protocol with no buyback, and the buyback works on a protocol with no locker — but the two together convert protocol success into immediate utility (fee discount), durable out-of-circulation supply, and a deepening on-chain market for the token.
 
@@ -280,10 +280,11 @@ These need domain knowledge that lives in the `percolator-vault`, `percolator`, 
 - **Account walking cost.** The trigger handler needs to see every live market's `oi_eff_long_q`, `oi_eff_short_q`, and `oracle_price`. With a small number of markets, passing them as remaining accounts is fine. Past some N, a periodically-updated exposure cache becomes preferable. dcccrypto to call where N sits today and where it is likely to sit at mainnet.
 - **Cranker authority model.** The `trigger_buyback` instruction is sketched as permissionless, with the on-chain gate doing all the gatekeeping. Confirm this matches the existing keeper authority story — if the project has a designated cranker key, the buyback trigger can hang off the same authority.
 - **Buyback pool custody.** Where does the withdrawn slice live between `trigger_buyback` and `settle_buyback`? Options: (a) a fresh PDA owned by the vault program, (b) a pre-existing program-owned ATA, (c) reuse the insurance fund account with a sub-balance counter. (a) is the cleanest separation; (c) avoids account-creation cost. dcccrypto's call.
-- **Canonical Raydium pool creation.** A $PERCOLATOR/SOL Raydium pool may not exist at the time of first deployment beyond the standard pump.fun migration pool. Decision needed: (a) designate the existing pump.fun-migrated pool as canonical, (b) create a new dedicated $PERCOLATOR/SOL pool seeded with an initial deposit funded by the protocol team (one-time, off the buyback budget), or (c) the cranker creates the pool on its first run with the first slice. (b) is cleanest; (c) merges seeding into the regular flow but adds a pool-creation branch the cranker must handle exactly once.
-- **USDC vs SOL pair side.** This proposal commits the locked pool to $PERCOLATOR/SOL pairing because pump.fun's migration default is SOL. If a deeper $PERCOLATOR/USDC pool exists or is preferred, the cranker's USDC → SOL conversion step in section 5.2 step 1 disappears and the slice is paired directly. dcccrypto to confirm the pair side.
+- **Confirm canonical PumpSwap pool address.** The pool address designated for hardcoding is `Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW` — the pump.fun migration pool. Live verification at proposal time: $145k liquidity, $134k 24h volume, ~98% of all $PERCOLATOR liquidity. No Raydium pool exists. dcccrypto to confirm this is the intended canonical pool before the constant is locked into the program.
+- **PumpSwap program integration.** The cranker's add-liquidity and LP-burn calls hit PumpSwap's program directly, with a different program ID and instruction layout than Raydium. Two domain calls needed: (a) what is PumpSwap's upgrade authority and the protocol's exposure if PumpSwap upgrades the AMM in a way that changes instruction layout, (b) confirm PumpSwap's add-liquidity instruction emits standard SPL LP tokens that can be burned via SPL `Burn`. Both are required before the keeper can be implemented.
+- **USDC vs SOL pair side.** This proposal commits the locked pool to $PERCOLATOR/SOL pairing because the canonical PumpSwap pool is SOL-paired. The cranker's USDC → SOL conversion step in section 5.2 step 1 is therefore mandatory. If a deeper $PERCOLATOR/USDC pool ever emerges and the protocol designates it as canonical, the conversion step disappears and the slice pairs directly. dcccrypto to confirm SOL is the intended pair side.
 - **Per-leg slippage bounds.** The cranker performs (1) a USDC → SOL swap, (2) a SOL → $PERCOLATOR buy, and (3) an LP add against the canonical pool. Each leg needs a max-slippage parameter to avoid sandwich exploitation. These sit in the keeper, not on-chain, but the values should be set deliberately given expected $PERCOLATOR liquidity at launch.
-- **Compute-budget feasibility of single-tx round-trip.** Whether the cranker can compose Jupiter swap + Raydium swap + Raydium add-liquidity + SPL burn into one Solana transaction depends on compute budget and account-input limits. If single-tx is infeasible, the cranker uses two transactions and section 5.4's atomic-cranker invariant relaxes to "cross-transaction slippage bound." dcccrypto to confirm.
+- **Compute-budget feasibility of single-tx round-trip.** Whether the cranker can compose Jupiter swap + PumpSwap swap + PumpSwap add-liquidity + SPL burn into one Solana transaction depends on compute budget and account-input limits. If single-tx is infeasible, the cranker uses two transactions and section 5.4's atomic-cranker invariant relaxes to "cross-transaction slippage bound." dcccrypto to confirm.
 - **Oracle source for `oracle_price` in the formula.** Almost certainly the same oracle the matcher already uses, but worth pinning explicitly so the buyback math and the matcher math cannot diverge. A separate oracle would create arbitrage between the two.
 - **Maintenance bps source.** Per-market constant or admin-tunable? If admin-tunable, the buyback inherits whatever change protocol governs that field.
 - **Fixed-point representation for the ratio.** The 1.5x threshold needs to be expressed without precision loss at realistic exposure scales. Pick the representation that matches the existing vault math conventions.
