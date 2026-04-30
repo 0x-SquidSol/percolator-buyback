@@ -109,15 +109,23 @@ pub struct MarketView {
 ///
 /// All arithmetic is checked. Any overflow at any step short-circuits
 /// with [`BuybackBlocker::MathOverflow`] rather than wrapping or
-/// saturating. This is fail-closed: the eligibility predicate that
-/// consumes this value treats `MathOverflow` as a gate failure, so the
-/// buyback does not fire when an aggregation step lost precision.
+/// saturating. The same variant is also returned if any
+/// `MarketView::maintenance_bps` exceeds [`BPS_DENOMINATOR`] (10 000) —
+/// an out-of-range bps is treated as a precondition violation in the
+/// same fail-closed bucket so it cannot silently inflate exposure in
+/// release builds. The eligibility predicate that consumes this value
+/// treats `MathOverflow` as a gate failure, so the buyback does not
+/// fire when an aggregation step lost precision or an upstream caller
+/// supplied an invalid `maintenance_bps`.
 ///
 /// Returns `Ok(0)` for an empty market list.
 #[inline]
 pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBlocker> {
     let mut total: u128 = 0;
     for m in markets {
+        if m.maintenance_bps as u128 > BPS_DENOMINATOR {
+            return Err(BuybackBlocker::MathOverflow);
+        }
         let oi_sum = m
             .oi_eff_long_q
             .checked_add(m.oi_eff_short_q)
@@ -234,5 +242,33 @@ mod tests {
             total_protocol_exposure(&[m_mul_overflow]),
             Err(BuybackBlocker::MathOverflow),
         );
+
+        // Path 3: checked_mul overflow on (notional × maintenance_bps).
+        // long = u128::MAX / 9_999, short = 0, price = 1, bps = 10_000.
+        // oi_sum = u128::MAX / 9_999. notional = oi_sum × 1 = oi_sum.
+        // notional × 10_000 > u128::MAX since (u128::MAX / 9_999) × 10_000
+        // exceeds u128::MAX.
+        let m_bps_overflow = sample_market(u128::MAX / 9_999, 0, 1, 10_000);
+        assert_eq!(
+            total_protocol_exposure(&[m_bps_overflow]),
+            Err(BuybackBlocker::MathOverflow),
+        );
+    }
+
+    #[test]
+    fn exposure_out_of_range_maintenance_bps_returns_err() {
+        // bps = 10_001 violates the BPS_DENOMINATOR upper bound. The
+        // function rejects it before any arithmetic runs, returning
+        // MathOverflow as a fail-closed precondition violation.
+        let m = sample_market(1_000, 1_000, 100, 10_001);
+        assert_eq!(
+            total_protocol_exposure(&[m]),
+            Err(BuybackBlocker::MathOverflow),
+        );
+
+        // Boundary: bps = BPS_DENOMINATOR (10_000) is accepted.
+        let m_boundary = sample_market(1_000, 0, 1, 10_000);
+        // 1_000 × 1 × 10_000 / 10_000 = 1_000.
+        assert_eq!(total_protocol_exposure(&[m_boundary]), Ok(1_000));
     }
 }
