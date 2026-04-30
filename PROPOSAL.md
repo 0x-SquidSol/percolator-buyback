@@ -160,10 +160,10 @@ A buyback event is intentionally split across two on-chain instructions (trigger
 
 ### 6.1 `percolator` (math library)
 
-- New helper: `total_protocol_exposure(markets: &[MarketView]) -> u128` (or fixed-point equivalent). Walks every live market, applies the per-market formula in section 3.1, sums. Should saturate on overflow rather than wrap — overflow at this scale means something is wrong with input data, not that the buyback should fire on a wrapped value.
+- New helper: `total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBlocker>` (or fixed-point equivalent). Walks every live market, applies the per-market formula in section 3.1, sums. Uses checked arithmetic and returns `Err(BuybackBlocker::MathOverflow)` on overflow rather than saturating — saturation is indistinguishable from genuine high exposure in operator logs, whereas an explicit `Err` preserves observability while keeping the same fail-closed property (the gate blocks regardless). Overflow at u128 scale still means something is wrong with input data, not that the buyback should fire.
 - New helper: `buyback_eligible(fund_balance, exposure, last_buyback_ts, now, haircut_ratio, floor) -> Result<u64, BuybackBlocker>`. Single function that runs all four gates and returns either the slice size or the failing condition. Pure, no I/O — handler wires the inputs.
 - New constants module entries for the four values in section 4.
-- New `BuybackBlocker` enum with one variant per gate (`RatioBelowThreshold`, `CooldownActive`, `BelowInsuranceFloor`, `HaircutsActive`) so callers can distinguish failure modes without parsing strings.
+- New `BuybackBlocker` enum with one variant per gate (`RatioBelowThreshold`, `CooldownActive`, `BelowInsuranceFloor`, `HaircutsActive`), plus `MultiMarketRequiresGlobalAggregation` (the per-slab N=1 invariant from section 11) and `MathOverflow` (the checked-arithmetic fail-closed channel above), so callers can distinguish failure modes without parsing strings.
 - Unit tests should cover boundary cases: exactly 1.5x ratio, cooldown at exactly 24h, fund balance at exactly the floor, `haircut_ratio` at 0.999... These are the values most likely to expose fixed-point or comparison-direction bugs.
 
 ### 6.2 `percolator-vault` (handler)
