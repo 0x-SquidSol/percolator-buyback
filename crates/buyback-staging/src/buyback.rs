@@ -156,6 +156,10 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
             .checked_mul(m.maintenance_bps as u128)
             .ok_or(BuybackBlocker::MathOverflow)?;
         let market_exposure = weighted / BPS_DENOMINATOR;
+        // Cross-market accumulator. Under maintenance_bps ≤ BPS_DENOMINATOR
+        // and MAX_MARKETS_FOR_PER_SLAB = 1, summing in-bounds market_exposures
+        // cannot overflow u128 — this checked_add is defense-in-depth against
+        // pathological input (also unreachable for a wrapping_add mutation).
         total = total
             .checked_add(market_exposure)
             .ok_or(BuybackBlocker::MathOverflow)?;
@@ -649,6 +653,55 @@ mod tests {
         assert_eq!(
             buyback_eligible(1_000_000, 700_000, last_ts, now, false, 100_000),
             Err(BuybackBlocker::CooldownActive),
+        );
+    }
+
+    #[test]
+    fn predicate_negative_last_ts_passes() {
+        // Defensive coverage: Solana Clock timestamps are non-negative
+        // by construction, but the i64 type allows negatives. Cooldown
+        // arithmetic via checked_add handles them without panic.
+        // last_ts = -1_000, now = 100_000.
+        // -1_000 + 86_400 = 85_400. now > 85_400 → cooldown passes.
+        // proportional = 1_000_000 × 10 / 10_000 = 1_000.
+        // clamped = 900_000. min = 1_000.
+        assert_eq!(
+            buyback_eligible(1_000_000, 500_000, -1_000, 100_000, false, 100_000),
+            Ok(1_000),
+        );
+    }
+
+    #[test]
+    fn predicate_now_before_last_ts_blocked() {
+        // Defensive coverage: caller's "now" is earlier than
+        // last_buyback_ts (clock drift / replayed state).
+        // last_ts = 100_000, now = 50_000.
+        // last + 86_400 = 186_400. 50_000 < 186_400 → CooldownActive.
+        assert_eq!(
+            buyback_eligible(1_000_000, 500_000, 100_000, 50_000, false, 100_000),
+            Err(BuybackBlocker::CooldownActive),
+        );
+    }
+
+    #[test]
+    fn predicate_gate_ordering_floor_before_ratio() {
+        // Cheap-to-expensive ordering: floor gate fires before ratio
+        // gate. fund == floor → BelowInsuranceFloor (strict > per §2.3).
+        // exposure = 700_000 would also fail the ratio check if reached.
+        assert_eq!(
+            buyback_eligible(100_000, 700_000, 0, 100_000, false, 100_000),
+            Err(BuybackBlocker::BelowInsuranceFloor),
+        );
+    }
+
+    #[test]
+    fn predicate_gate_ordering_haircut_before_ratio() {
+        // Cheap-to-expensive ordering: haircut gate fires before ratio
+        // gate. haircut_active = true → HaircutsActive.
+        // exposure = 700_000 would also fail the ratio check if reached.
+        assert_eq!(
+            buyback_eligible(1_000_000, 700_000, 0, 100_000, true, 100_000),
+            Err(BuybackBlocker::HaircutsActive),
         );
     }
 }
