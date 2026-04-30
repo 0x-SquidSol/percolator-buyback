@@ -1,8 +1,8 @@
 # Autonomous Buyback Proposal
 
-A design proposal for a protocol-funded $PERCOLATOR buyback driven by surplus in the Percolator insurance fund. Bought tokens are paired with SOL and added to the canonical PumpSwap $PERCOLATOR/SOL pool, after which the LP receipt tokens are burned — permanently locking that liquidity. The buyback is the supply-side counterpart to the locker's demand-side fee discount, and the two together form the token's full utility loop. Implementation lands across `percolator`, `percolator-vault`, and `percolator-keeper`.
+A design and reference implementation for a protocol-funded $PERCOLATOR buyback driven by surplus in the Percolator insurance fund. Bought tokens are paired with SOL and added to the canonical PumpSwap $PERCOLATOR/SOL pool, after which the LP receipt tokens are burned — permanently locking that liquidity. The buyback is the supply-side counterpart to the locker's demand-side fee discount, and the two together form the token's full utility loop. Implementation lands across `percolator` (math), `percolator-prog` (wrapper), `percolator-vault` (handler), `percolator-sdk`, `percolator-keeper`, and `percolator-indexer`.
 
-This document is a proposal, not a spec. Approved parameters and the four-condition gate are decided. Plumbing details — slab aggregation, cranker authority, slice custody, canonical pool address — are explicitly flagged for dcccrypto to settle against the live `percolator-vault` and `percolator` code.
+The four hardcoded parameters and the four-condition gate are decided. Plumbing details — slab aggregation, cranker authority, slice custody, canonical pool address, wrapper integration — are settled in §11 against the live `percolator-vault` and `percolator-prog` code.
 
 ## 1. Goal
 
@@ -98,7 +98,7 @@ This sum **does not exist in the codebase today.** It is net-new in the `percola
 ratio = insurance_fund_balance / total_protocol_exposure
 ```
 
-Computed in the same fixed-point regime the rest of the vault uses. Implementations should pick a representation that does not overflow at realistic OI scales and does not lose precision near the 1.5x boundary — dcccrypto to choose between Q64.64, scaled u128, or the existing helper convention.
+Implemented via integer cross-multiplication on `u128` operands: the gate compares `fund_balance × 10` against `total_exposure × 15` (NUM=15, DEN=10) — see §11 "Ratio comparison form". No fixed-point representation needed; the boundary at exactly 1.5× is exact integer equality and equality passes per §2.1.
 
 ## 4. Constants
 
@@ -113,7 +113,7 @@ All four are compile-time constants in the `percolator` crate, mirroring how the
 
 `BUYBACK_FLOOR_GUARD` is listed for completeness — the floor itself remains an admin-set value on the vault, the buyback gate just reads it.
 
-The canonical PumpSwap $PERCOLATOR/SOL pool address is also a hardcoded constant on the program (the cranker reads it from the program rather than from a config file). The pool already exists from pump.fun's migration: `Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW`. dcccrypto to confirm before lock-in (see section 11).
+The canonical PumpSwap $PERCOLATOR/SOL pool address is also a hardcoded constant on the program (the cranker reads it from the program rather than from a config file). The pool already exists from pump.fun's migration: `Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW`. Confirmed in §11 "Canonical PumpSwap pool address" (re-verified 2026-04-30). A DexScreener depth sweep within seven days of vault deploy remains a pre-flight checklist item per §11.
 
 ## 5. Per-Event Behavior
 
@@ -157,6 +157,8 @@ The on-chain handler's job ends at step 3 of section 5.1. The cranker round-trip
 A buyback event is intentionally split across two on-chain instructions (trigger, then settle) so the on-chain program never embeds DEX or AMM routing logic. This means a Jupiter or PumpSwap outage degrades the buyback gracefully: triggers still fire on schedule, settlement just queues until the swap and add-liquidity paths return.
 
 ## 6. What Needs To Be Built, By Repo
+
+This section pre-dates the §11 design decisions and covers the math library, vault, keeper, and indexer at sketch level. The wrapper's new permissionless instruction tag and the SDK's new encoders are described in §11 ("Vault → wrapper integration", "Mainnet rollout sequencing"); §11 is authoritative when it disagrees with the sketches below.
 
 ### 6.1 `percolator` (math library)
 
@@ -282,7 +284,7 @@ The questions originally raised in this section have been resolved with dcccrypt
 - **Buyback pool custody — fresh PDA owned by the vault program.** Cleanest separation between the slice in flight and any other balance. One rent-funded account per slab.
 - **Vault → wrapper integration — new permissionless wrapper instruction.** Neither of the two existing insurance-withdraw paths is appropriate (one is admin-only, the other rate-limited in a way that would collide with the buyback's own 24h cooldown). The wrapper gains a new permissionless instruction tag that accepts a CPI from the vault PDA and transfers the slice from the slab insurance fund to the buyback pool. Policy (the four-condition gate) lives in the vault; the wrapper's new tag does the bare withdrawal under the vault PDA's signature. This keeps the wrapper minimal and matches its declared "thin perp engine" stance.
 - **Canonical PumpSwap pool address — `Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW`.** Pool, LP mint, and PumpSwap program ID all re-verified (2026-04-30): pool exists and is PumpSwap-owned; LP mint is vanilla Token-2022, 82 bytes, no extensions; program ID confirmed. A live "deepest pool" depth check via DexScreener is required within seven days of the vault deploy and is part of the pre-flight checklist.
-- **PumpSwap upgrade authority — single key, mitigated by binary-pin + emergency drain.** PumpSwap's upgrade authority is a single externally-owned key, not multisig and not renounced. This is the only unbounded loss surface in the design and is mitigated as follows: the vault binary pins PumpSwap's program-data hash at deploy time, and `settle_buyback` re-hashes that program-data on every settlement and reverts if the hash has drifted. Stuck slices are recoverable via an emergency-drain instruction reachable only after a program upgrade (preserving the "no admin tunable" property — the recovery path requires an observable code change, like every other halt path in the design). The keeper additionally watches for `BPFLoaderUpgradeable` events targeting PumpSwap's program ID and disables itself on detection.
+- **PumpSwap upgrade authority — single key, mitigated by binary-pin + emergency drain.** PumpSwap's upgrade authority is a single externally-owned key, not multisig and not renounced. This is the only unbounded loss surface in the design and is mitigated as follows: the vault binary pins PumpSwap's program-data hash and refuses to settle if that pin no longer matches; drift halts the buyback. Stuck slices are recoverable via an emergency-drain instruction reachable only after a program upgrade (preserving the "no admin tunable" property — the recovery path requires an observable code change, like every other halt path in the design). The keeper additionally watches for `BPFLoaderUpgradeable` events targeting PumpSwap's program ID and disables itself on detection.
 - **USDC vs SOL pair side — SOL.** The canonical PumpSwap pool is SOL-paired; the cranker's USDC→SOL conversion step is mandatory. Re-evaluated only if a deeper $PERCOLATOR/USDC pool ever becomes canonical.
 - **Per-leg slippage bounds — env-var-configured, conservative defaults.** Each of the three swap legs (Jupiter USDC→SOL, PumpSwap buy, PumpSwap add-liquidity) carries an independent slippage cap, plus a depth-aware dynamic check that aborts the round-trip when implied price impact exceeds the natural pool impact by a configured margin. The exact default values live in the keeper repo's `.env.example` and are intentionally not published here — pinning slippage in a public spec is a sandwich-bot's free lunch.
 - **Compute-budget feasibility — three transactions.** Jupiter routing alone can exceed 1M CU; composing it with PumpSwap legs and the Token-2022 burn does not fit within Solana's 1.4M CU cap. The cranker round-trip is split into three wallet-client transactions: Tx A (USDC→SOL via Jupiter), Tx B (SOL split + PumpSwap buy + add-liquidity + Token-2022 LP burn), Tx C (`settle_buyback`). The cranker carries an idempotent state machine across the three transactions so a crash mid-round-trip is recoverable.
