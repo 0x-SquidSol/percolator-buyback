@@ -2,7 +2,7 @@
 
 A design proposal for an autonomous, protocol-funded buyback of $PERCOLATOR driven by surplus in the Percolator insurance fund. Bought tokens are paired with SOL and added as permanent locked liquidity to the canonical PumpSwap pool — the LP receipt tokens are burned, so the liquidity can never be withdrawn.
 
-This repository is **design-decisions-finalized** — no code yet. The full design lives in [PROPOSAL.md](PROPOSAL.md). Implementation will land across `percolator` (math), `percolator-prog` (wrapper), `percolator-vault` (handler), `percolator-sdk` (encoders), `percolator-keeper` (cranker), and `percolator-indexer` (events feed).
+This repository is **design-decisions-finalized**. The full design lives in [PROPOSAL.md](PROPOSAL.md), and integration tracking lives in [INTEGRATION.md](INTEGRATION.md). Reference implementations of standalone modules are staged under [`crates/`](crates/) — these compile and test in isolation here before being transferred into the live repos. Implementation will land across `percolator` (math), `percolator-prog` (wrapper), `percolator-vault` (handler), `percolator-sdk` (encoders), `percolator-keeper` (cranker), and `percolator-indexer` (events feed).
 
 The buyback is the supply-side counterpart to [`percolator-locker`](https://github.com/0x-SquidSol/percolator-locker)'s demand-side fee discount. Locker locks float for fee discounts; buyback locks supply and liquidity in the AMM forever. Together they form the token's full utility loop.
 

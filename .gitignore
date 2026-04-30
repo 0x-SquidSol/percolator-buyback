@@ -3,3 +3,8 @@
 Thumbs.db
 .vscode/
 .idea/
+
+# Rust build artifacts
+target/
+/Cargo.lock
+crates/**/Cargo.lock

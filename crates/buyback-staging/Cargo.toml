@@ -1,0 +1,6 @@
+[package]
+name = "buyback"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Staging crate; canonical home is dcccrypto/percolator. The contents of src/buyback.rs are intended to be transferred into that crate after the design is finalized."
