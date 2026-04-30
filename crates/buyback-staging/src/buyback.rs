@@ -38,6 +38,12 @@ pub const BUYBACK_COOLDOWN_SECS: i64 = 86_400;
 /// in PROPOSAL.md §3.1 (`maintenance_bps / 10_000`).
 pub const BPS_DENOMINATOR: u128 = 10_000;
 
+// Compile-time invariant: the ratio threshold must always exceed 1×.
+// A misedit that produced NUM <= DEN would silently allow buybacks at
+// any solvency ratio, including under-collateralized states. This
+// const assertion fails the build rather than the tests.
+const _: () = assert!(BUYBACK_RATIO_THRESHOLD_NUM > BUYBACK_RATIO_THRESHOLD_DEN);
+
 /// Hard fail-closed assertion on the per-slab buyback implementation.
 ///
 /// At launch the protocol has one live market, making per-slab semantically
@@ -116,14 +122,17 @@ pub struct MarketView {
 ///
 /// All arithmetic is checked. Any overflow at any step short-circuits
 /// with [`BuybackBlocker::MathOverflow`] rather than wrapping or
-/// saturating. The same variant is also returned if any
-/// `MarketView::maintenance_bps` exceeds [`BPS_DENOMINATOR`] (10 000) —
-/// an out-of-range bps is treated as a precondition violation in the
-/// same fail-closed bucket so it cannot silently inflate exposure in
-/// release builds. The eligibility predicate that consumes this value
-/// treats `MathOverflow` as a gate failure, so the buyback does not
-/// fire when an aggregation step lost precision or an upstream caller
-/// supplied an invalid `maintenance_bps`.
+/// saturating. The same variant is also returned for two precondition
+/// violations on `MarketView`: (a) `maintenance_bps` exceeds
+/// [`BPS_DENOMINATOR`] (10 000) — an out-of-range bps could silently
+/// inflate exposure; and (b) `oracle_price_e6 == 0` — a missing or
+/// stuck oracle reading could silently zero out the market's
+/// contribution to total exposure, masking real risk. Both
+/// preconditions are folded into the same fail-closed bucket. The
+/// eligibility predicate that consumes this value treats
+/// `MathOverflow` as a gate failure, so the buyback does not fire when
+/// an aggregation step lost precision or an upstream caller supplied
+/// an invalid `MarketView`.
 ///
 /// Returns `Ok(0)` for an empty market list.
 #[inline]
@@ -131,6 +140,9 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
     let mut total: u128 = 0;
     for m in markets {
         if m.maintenance_bps as u128 > BPS_DENOMINATOR {
+            return Err(BuybackBlocker::MathOverflow);
+        }
+        if m.oracle_price_e6 == 0 {
             return Err(BuybackBlocker::MathOverflow);
         }
         let oi_sum = m
@@ -279,11 +291,20 @@ mod tests {
 
     /// Locks the cross-multiplication convention against accidental future
     /// edits. If this test ever fails, the gate's comparison direction may
-    /// have silently inverted.
+    /// have silently inverted. The `NUM > DEN` invariant is locked
+    /// separately by a compile-time `const _: () = assert!(...)` above.
     #[test]
     fn ratio_threshold_constants_lock() {
         assert_eq!(BUYBACK_RATIO_THRESHOLD_NUM, 15);
         assert_eq!(BUYBACK_RATIO_THRESHOLD_DEN, 10);
+    }
+
+    /// Locks the basis-points denominator at exactly 10 000. A misedit
+    /// would silently scale every exposure and slice computation by
+    /// orders of magnitude.
+    #[test]
+    fn bps_denominator_lock() {
+        assert_eq!(BPS_DENOMINATOR, 10_000);
     }
 
     #[test]
@@ -399,6 +420,30 @@ mod tests {
         let m_boundary = sample_market(1_000, 0, 1, 10_000);
         // 1_000 × 1 × 10_000 / 10_000 = 1_000.
         assert_eq!(total_protocol_exposure(&[m_boundary]), Ok(1_000));
+    }
+
+    #[test]
+    fn exposure_zero_oracle_price_returns_err() {
+        // oracle_price_e6 = 0 violates the non-zero precondition. The
+        // function rejects it before any arithmetic runs, returning
+        // MathOverflow as a fail-closed precondition violation. A
+        // missing or stuck oracle would otherwise silently zero out
+        // the market's contribution to total exposure.
+        let m = sample_market(1_000, 0, 0, 500);
+        assert_eq!(
+            total_protocol_exposure(&[m]),
+            Err(BuybackBlocker::MathOverflow),
+        );
+
+        // One bad market poisons the aggregate even when other markets
+        // are valid — short-circuiting matches how out-of-range bps and
+        // arithmetic overflows are handled.
+        let m_bad = sample_market(1_000, 0, 0, 500);
+        let m_good = sample_market(1_000, 0, 100, 500);
+        assert_eq!(
+            total_protocol_exposure(&[m_good, m_bad]),
+            Err(BuybackBlocker::MathOverflow),
+        );
     }
 
     // ---------------- assert_per_slab_invariant ----------------
