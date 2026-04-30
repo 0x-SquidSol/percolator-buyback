@@ -1,8 +1,15 @@
-//! Buyback parameters, gate-failure types, and cross-market exposure
-//! aggregator.
+//! Buyback parameters, gate-failure types, exposure aggregator, and the
+//! eligibility predicate.
 //!
-//! Constants, gate-failure types, and the pure exposure helper. The
-//! eligibility predicate that consumes them lands in a follow-up commit.
+//! The handler's call sequence is:
+//!
+//! 1. Verify the slab pubkey matches the canonical mainnet slab (handler
+//!    crate concern; not in this module).
+//! 2. [`assert_per_slab_invariant`] — confirms the per-slab math premise
+//!    (`live_market_count <= MAX_MARKETS_FOR_PER_SLAB`).
+//! 3. [`total_protocol_exposure`] — aggregates per-market exposure.
+//! 4. [`buyback_eligible`] — runs the four economic gates and returns the
+//!    slice on success.
 //!
 //! All four buyback parameters are compile-time constants by design (see
 //! PROPOSAL.md §4 and §7.5). Changing any of them requires a program
@@ -144,6 +151,128 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
     Ok(total)
 }
 
+/// Asserts the per-slab implementation's premise: at most one live market.
+///
+/// Per PROPOSAL.md §11 "Slab vs market aggregation — per-slab", the
+/// per-slab buyback math is mathematically equivalent to the global
+/// formulation only while the live market count does not exceed
+/// [`MAX_MARKETS_FOR_PER_SLAB`]. Once a second market launches, the gate
+/// must migrate to a global aggregation; this function fails closed in
+/// that scenario so the caller can route to the upgrade path.
+///
+/// Trust model: callers must derive `live_market_count` from an
+/// authoritative on-chain source (e.g., comparing the slab pubkey
+/// against a hardcoded `CANONICAL_SLAB` constant in the handler crate)
+/// rather than from a cranker-supplied value. The math crate cannot
+/// verify the count itself.
+pub fn assert_per_slab_invariant(live_market_count: usize) -> Result<(), BuybackBlocker> {
+    if live_market_count > MAX_MARKETS_FOR_PER_SLAB {
+        return Err(BuybackBlocker::MultiMarketRequiresGlobalAggregation);
+    }
+    Ok(())
+}
+
+/// Eligibility gate for a buyback trigger.
+///
+/// Runs the four economic gates from PROPOSAL.md §2 in cheap-to-expensive
+/// order — cooldown, insurance floor, protocol stress, exposure ratio —
+/// then computes and returns the slice size. The per-slab N=1 invariant
+/// is checked separately by [`assert_per_slab_invariant`]; the handler
+/// must call that first.
+///
+/// On success, the returned slice has two regimes:
+///
+/// - **Proportional**: [`BUYBACK_PER_EVENT_BPS`] (10 bps) of `fund_balance`.
+/// - **Clamped**: `fund_balance - insurance_floor` when the proportional
+///   value would breach the floor.
+///
+/// Note the floor's strict-inequality asymmetry: `fund_balance ==
+/// insurance_floor` fails the floor gate (PROPOSAL.md §2.3 specifies
+/// `fund_balance > insurance_floor`), while `fund_balance ==
+/// insurance_floor + 1` passes and may produce a slice of 0 or 1
+/// depending on the proportional arm's integer rounding.
+///
+/// **`Ok(0)` IS A CALLER CORRECTNESS CONTRACT.** When the slice rounds
+/// to zero (fund just above floor, proportional truncates), the caller
+/// MUST short-circuit without stamping the cooldown timestamp.
+/// PROPOSAL.md §5.1 mandates this: "no point burning a 24h slot on a
+/// zero-byte event." A handler that forgets this contract will burn a
+/// 24h cooldown for no economic effect.
+///
+/// Returns `Err(BuybackBlocker::MathOverflow)` from any `checked_*`
+/// arithmetic failure. At realistic input scales this is defense-in-depth
+/// — practical inputs do not approach the u128 boundary — but the
+/// explicit channel keeps pathological input observable in operator logs
+/// alongside the existing overflow handling in [`total_protocol_exposure`].
+///
+/// Trust assumptions on parameters:
+///
+/// - `haircut_active`: caller has aggregated this across all live
+///   markets. The math crate trusts the boolean as a global stress
+///   signal (per the prereq A resolution: stress is protocol-wide, not
+///   slab-local).
+/// - `now`, `last_buyback_ts`: caller supplies via Solana `Clock`. No
+///   defensive sign checks; Solana timestamps post-genesis are
+///   non-negative by construction.
+/// - `total_exposure_q`: pre-aggregated by [`total_protocol_exposure`].
+///   The Q-format suffix matches the field naming in [`MarketView`].
+pub fn buyback_eligible(
+    fund_balance: u64,
+    total_exposure_q: u128,
+    last_buyback_ts: i64,
+    now: i64,
+    haircut_active: bool,
+    insurance_floor: u64,
+) -> Result<u64, BuybackBlocker> {
+    // Gate 1: Cooldown — `now >= last_buyback_ts + BUYBACK_COOLDOWN_SECS`.
+    let next_eligible_ts = last_buyback_ts
+        .checked_add(BUYBACK_COOLDOWN_SECS)
+        .ok_or(BuybackBlocker::MathOverflow)?;
+    if now < next_eligible_ts {
+        return Err(BuybackBlocker::CooldownActive);
+    }
+
+    // Gate 2: Floor — strict `fund_balance > insurance_floor`.
+    if fund_balance <= insurance_floor {
+        return Err(BuybackBlocker::BelowInsuranceFloor);
+    }
+
+    // Gate 3: Stress — no haircut active anywhere in the protocol.
+    if haircut_active {
+        return Err(BuybackBlocker::HaircutsActive);
+    }
+
+    // Gate 4: Ratio — cross-multiplied form of `fund / exposure >= 1.5`.
+    // Equality passes (PROPOSAL.md §2.1: `>=`).
+    //
+    // Note: the lhs `checked_mul` is defense-in-depth; with `fund_balance:
+    // u64` widened to u128 and multiplied by 10, the result cannot exceed
+    // ~1.84e20, far below `u128::MAX`. The check is retained against any
+    // future signature change. The rhs `checked_mul` IS reachable — a
+    // pathologically large `total_exposure_q` near `u128::MAX` overflows
+    // when multiplied by 15.
+    let lhs = (fund_balance as u128)
+        .checked_mul(BUYBACK_RATIO_THRESHOLD_DEN)
+        .ok_or(BuybackBlocker::MathOverflow)?;
+    let rhs = total_exposure_q
+        .checked_mul(BUYBACK_RATIO_THRESHOLD_NUM)
+        .ok_or(BuybackBlocker::MathOverflow)?;
+    if lhs < rhs {
+        return Err(BuybackBlocker::RatioBelowThreshold);
+    }
+
+    // Slice computation. The proportional arm uses `checked_mul` to bound
+    // u64 overflow at the source; the clamped arm uses `saturating_sub`
+    // safely because the floor gate has already established
+    // `fund_balance > insurance_floor`.
+    let slice_proportional = fund_balance
+        .checked_mul(BUYBACK_PER_EVENT_BPS)
+        .ok_or(BuybackBlocker::MathOverflow)?
+        / (BPS_DENOMINATOR as u64);
+    let slice_clamped = fund_balance.saturating_sub(insurance_floor);
+    Ok(slice_proportional.min(slice_clamped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +399,211 @@ mod tests {
         let m_boundary = sample_market(1_000, 0, 1, 10_000);
         // 1_000 × 1 × 10_000 / 10_000 = 1_000.
         assert_eq!(total_protocol_exposure(&[m_boundary]), Ok(1_000));
+    }
+
+    // ---------------- assert_per_slab_invariant ----------------
+
+    #[test]
+    fn per_slab_zero_markets_passes() {
+        // 0 ≤ MAX_MARKETS_FOR_PER_SLAB; degenerate but valid.
+        assert_eq!(assert_per_slab_invariant(0), Ok(()));
+    }
+
+    #[test]
+    fn per_slab_one_market_passes() {
+        assert_eq!(assert_per_slab_invariant(1), Ok(()));
+    }
+
+    #[test]
+    fn per_slab_two_markets_blocked() {
+        assert_eq!(
+            assert_per_slab_invariant(2),
+            Err(BuybackBlocker::MultiMarketRequiresGlobalAggregation),
+        );
+    }
+
+    // ---------------- buyback_eligible — happy paths ----------------
+
+    #[test]
+    fn predicate_all_gates_pass_proportional_slice() {
+        // fund=1_000_000, exposure=500_000 → ratio = 2.0 (≥ 1.5).
+        // proportional = 1_000_000 × 10 / 10_000 = 1_000.
+        // clamped = 1_000_000 - 100_000 = 900_000.
+        // min = 1_000.
+        assert_eq!(
+            buyback_eligible(1_000_000, 500_000, 0, 100_000, false, 100_000),
+            Ok(1_000),
+        );
+    }
+
+    #[test]
+    fn predicate_clamped_slice_arm() {
+        // fund just above floor; clamped < proportional.
+        // fund = 100_005, floor = 100_000.
+        // proportional = 100_005 × 10 / 10_000 = 100.
+        // clamped = 5.
+        // min = 5.
+        // exposure = 50_000 → ratio = 2.0001 (≥ 1.5).
+        assert_eq!(
+            buyback_eligible(100_005, 50_000, 0, 100_000, false, 100_000),
+            Ok(5),
+        );
+    }
+
+    #[test]
+    fn predicate_zero_slice_when_proportional_rounds_to_zero() {
+        // fund × BPS / DENOM rounds to 0 when fund × BPS < DENOM.
+        // fund = 100, floor = 99 → proportional = 0, clamped = 1, min = 0.
+        // exposure = 60 → ratio = 1.667 (≥ 1.5).
+        assert_eq!(buyback_eligible(100, 60, 0, 100_000, false, 99), Ok(0),);
+    }
+
+    // ---------------- buyback_eligible — gate failures ----------------
+
+    #[test]
+    fn predicate_cooldown_active() {
+        let last_ts: i64 = 1_000_000;
+        let now: i64 = last_ts + BUYBACK_COOLDOWN_SECS - 1;
+        assert_eq!(
+            buyback_eligible(1_000_000, 500_000, last_ts, now, false, 100_000),
+            Err(BuybackBlocker::CooldownActive),
+        );
+    }
+
+    #[test]
+    fn predicate_cooldown_at_boundary_passes() {
+        // now == last + COOLDOWN_SECS exactly → passes (≥ not >).
+        let last_ts: i64 = 1_000_000;
+        let now: i64 = last_ts + BUYBACK_COOLDOWN_SECS;
+        assert_eq!(
+            buyback_eligible(1_000_000, 500_000, last_ts, now, false, 100_000),
+            Ok(1_000),
+        );
+    }
+
+    #[test]
+    fn predicate_last_ts_zero_passes_cooldown() {
+        // last_ts = 0 means never fired. Cooldown trivially passes since
+        // 0 + 86_400 = 86_400, far below realistic Solana clock.
+        assert_eq!(
+            buyback_eligible(1_000_000, 500_000, 0, 100_000, false, 100_000),
+            Ok(1_000),
+        );
+    }
+
+    #[test]
+    fn predicate_floor_equal_blocked() {
+        // fund == floor → fails (strict `>` per PROPOSAL.md §2.3).
+        assert_eq!(
+            buyback_eligible(100_000, 500_000, 0, 100_000, false, 100_000),
+            Err(BuybackBlocker::BelowInsuranceFloor),
+        );
+    }
+
+    #[test]
+    fn predicate_floor_plus_one_passes() {
+        // fund = floor + 1 → passes; slice clamped to 1.
+        // proportional = 100_001 × 10 / 10_000 = 100.
+        // clamped = 1.
+        // min = 1.
+        assert_eq!(
+            buyback_eligible(100_001, 50_000, 0, 100_000, false, 100_000),
+            Ok(1),
+        );
+    }
+
+    #[test]
+    fn predicate_haircut_active_blocked() {
+        assert_eq!(
+            buyback_eligible(1_000_000, 500_000, 0, 100_000, true, 100_000),
+            Err(BuybackBlocker::HaircutsActive),
+        );
+    }
+
+    #[test]
+    fn predicate_ratio_below_threshold() {
+        // fund=1_000_000, exposure=700_000 → ratio ≈ 1.43 (< 1.5).
+        // 1_000_000 × 10 = 10_000_000.
+        // 700_000 × 15 = 10_500_000.
+        // lhs < rhs → fail.
+        assert_eq!(
+            buyback_eligible(1_000_000, 700_000, 0, 100_000, false, 100_000),
+            Err(BuybackBlocker::RatioBelowThreshold),
+        );
+    }
+
+    #[test]
+    fn predicate_ratio_exactly_at_threshold_passes() {
+        // fund × 10 == exposure × 15 → ratio = 1.5 exactly. Equality
+        // passes (PROPOSAL.md §2.1: `≥`).
+        // fund = 15_000, exposure = 10_000.
+        // 15_000 × 10 = 150_000 = 10_000 × 15. lhs ≥ rhs.
+        // proportional = 15_000 × 10 / 10_000 = 15.
+        // clamped = 15_000 - 100 = 14_900.
+        // min = 15.
+        assert_eq!(
+            buyback_eligible(15_000, 10_000, 0, 100_000, false, 100),
+            Ok(15),
+        );
+    }
+
+    #[test]
+    fn predicate_zero_exposure_passes() {
+        // exposure = 0 → ratio is degenerate ("infinite"). lhs ≥ 0 → passes.
+        assert_eq!(
+            buyback_eligible(1_000_000, 0, 0, 100_000, false, 100_000),
+            Ok(1_000),
+        );
+    }
+
+    // ---------------- buyback_eligible — overflow paths ----------------
+
+    #[test]
+    fn predicate_cooldown_addition_overflow() {
+        // last_buyback_ts at i64::MAX → checked_add(COOLDOWN_SECS) overflows.
+        // The function returns MathOverflow before any other check.
+        assert_eq!(
+            buyback_eligible(1, 0, i64::MAX, 0, false, 0),
+            Err(BuybackBlocker::MathOverflow),
+        );
+    }
+
+    #[test]
+    fn predicate_rhs_cross_multiply_overflow() {
+        // exposure × 15 overflows when exposure > u128::MAX / 15.
+        // u128::MAX / 14 × 15 > u128::MAX → overflows on rhs checked_mul.
+        // (lhs path is unreachable from u64 fund_balance — see function
+        // doc-comment.)
+        assert_eq!(
+            buyback_eligible(1_000_000, u128::MAX / 14, 0, 100_000, false, 100_000,),
+            Err(BuybackBlocker::MathOverflow),
+        );
+    }
+
+    #[test]
+    fn predicate_slice_multiply_overflow() {
+        // fund × BPS_PER_EVENT (10) overflows u64 when fund > u64::MAX/10.
+        // fund = u64::MAX, exposure small enough that ratio passes.
+        // u64::MAX × 10 wraps in u64 → checked_mul returns None.
+        assert_eq!(
+            buyback_eligible(u64::MAX, 1_000, 0, 100_000, false, 0),
+            Err(BuybackBlocker::MathOverflow),
+        );
+    }
+
+    // ---------------- buyback_eligible — gate ordering ----------------
+
+    #[test]
+    fn predicate_gate_ordering_returns_cheapest_failure() {
+        // Both cooldown AND ratio fail. Cooldown is checked first
+        // (cheap-to-expensive ordering per PROPOSAL.md §2), so the
+        // returned error must be CooldownActive, not RatioBelowThreshold.
+        let last_ts: i64 = 1_000_000;
+        let now: i64 = last_ts + BUYBACK_COOLDOWN_SECS - 1; // cooldown fails
+                                                            // exposure high enough that ratio also fails: 1_000_000 / 700_000 ≈ 1.43
+        assert_eq!(
+            buyback_eligible(1_000_000, 700_000, last_ts, now, false, 100_000),
+            Err(BuybackBlocker::CooldownActive),
+        );
     }
 }
