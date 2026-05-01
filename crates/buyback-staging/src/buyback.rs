@@ -719,4 +719,17 @@ mod tests {
             Err(BuybackBlocker::HaircutsActive),
         );
     }
+
+    #[test]
+    fn predicate_gate_ordering_floor_before_haircut() {
+        // Cheap-to-expensive ordering: floor gate fires before haircut
+        // gate. Both would fail simultaneously: fund == floor and
+        // haircut_active = true. Floor is checked first, so the
+        // returned variant must be BelowInsuranceFloor, not HaircutsActive.
+        // (Cooldown trivially passes: 0 + 86_400 < 100_000.)
+        assert_eq!(
+            buyback_eligible(100_000, 500_000, 0, 100_000, true, 100_000),
+            Err(BuybackBlocker::BelowInsuranceFloor),
+        );
+    }
 }
