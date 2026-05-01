@@ -23,6 +23,8 @@ Steps:
 
 A reference implementation of steps 1–3 is staged in this repo at [`crates/buyback-staging/src/buyback.rs`](crates/buyback-staging/src/buyback.rs). The file is stdlib-only, with no Solana or crate-internal dependencies. To transfer, copy the file into `dcccrypto/percolator/src/buyback.rs` and add `pub mod buyback;` to that crate's lib root (`src/percolator.rs`, per its `Cargo.toml [lib] path`), alongside the existing `pub mod i128;` and `pub mod wide_math;` declarations. Adapt to the receiving crate's lint, formatting, and error-prelude conventions before merging — minor cleanup is expected. Once merged, the staging copy is no longer authoritative; subsequent edits in either repo are mirrored to the other in a follow-up PR.
 
+Caller-side adapter (handler concern, not file content): the handler that wires `buyback_eligible` reads the insurance fund balance as `InsuranceFund::balance: U128` — a BPF-alignment wrapper, not `u128`. Adapt with `insurance_fund.balance.get()` to obtain `u128`, then narrow to `u64` via `u64::try_from(...)` (not `as u64`); the `try_from` failure is a fail-closed `MathOverflow` path. Same treatment for `insurance_floor` if it carries `U128`.
+
 Verification: steps 1–3 pass `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt -- --check`, and `cargo doc --no-deps` in the staging crate. Step 4's Kani harnesses are verified via `cargo kani --lib` once integrated upstream.
 
 Transfer record: not yet merged.
