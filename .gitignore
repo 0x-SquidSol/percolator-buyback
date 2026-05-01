@@ -24,3 +24,8 @@ crates/**/Cargo.lock
 
 # Local scratch (verification artifacts, downloaded reference snapshots, etc.)
 .tmp/
+
+# TypeScript staging crates: install artifacts only, lockfiles ARE committed
+node_modules/
+**/node_modules/
+*.tsbuildinfo

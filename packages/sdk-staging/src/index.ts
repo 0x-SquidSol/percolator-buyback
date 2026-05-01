@@ -1,0 +1,12 @@
+// Buyback SDK staging — entry point.
+//
+// Re-exports the public surface staged for transfer into
+// `dcccrypto/percolator-sdk`. Each exported symbol's destination is
+// documented in the file where it's defined.
+//
+// At transfer time, this file does NOT cross over: the destination SDK
+// has its own `src/index.ts` barrel that re-exports everything via
+// `export * from "./solana/stake.js"`. The buyback additions are
+// merged into the destination's existing modules, not dropped as a
+// standalone package.
+export {};
