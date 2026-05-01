@@ -56,15 +56,25 @@ pub const MAX_MARKETS_FOR_PER_SLAB: usize = 1;
 
 /// Reasons a buyback trigger may be blocked.
 ///
-/// Each variant maps to a distinct on-chain failure mode, returned by the
-/// eligibility predicate added in a follow-up commit. Keeping these as an
-/// enum (vs. string errors) lets callers distinguish steady-state cooldown
-/// from anomalous gate failures without parsing.
+/// Each variant maps to a distinct failure mode returned by
+/// [`assert_per_slab_invariant`], [`total_protocol_exposure`], or
+/// [`buyback_eligible`]. Keeping these as an enum (vs. string errors)
+/// lets callers distinguish steady-state cooldown from anomalous gate
+/// failures without parsing.
+///
+/// Variants are ordered to match the runtime evaluation sequence:
+/// the per-slab premise check fires first (in the sibling
+/// [`assert_per_slab_invariant`]), then the four economic gates run
+/// cheap-to-expensive inside [`buyback_eligible`]. `MathOverflow` sits
+/// last by convention because it is a cross-cutting fail-closed bucket
+/// that any `checked_*` site can fire from, not a sequenced gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuybackBlocker {
-    /// `fund × DEN` < `exposure × NUM`. The insurance fund is not
-    /// over-collateralized enough relative to current protocol exposure.
-    RatioBelowThreshold,
+    /// Live market count exceeds [`MAX_MARKETS_FOR_PER_SLAB`]. The
+    /// per-slab implementation's premise no longer holds; a program
+    /// upgrade must migrate to global aggregation before buybacks can
+    /// resume.
+    MultiMarketRequiresGlobalAggregation,
     /// Less than [`BUYBACK_COOLDOWN_SECS`] since the previous successful
     /// trigger.
     CooldownActive,
@@ -74,15 +84,15 @@ pub enum BuybackBlocker {
     /// One or more markets are currently paying haircut on positive PnL,
     /// indicating the protocol is in a stressed regime.
     HaircutsActive,
-    /// Live market count exceeds [`MAX_MARKETS_FOR_PER_SLAB`]. The
-    /// per-slab implementation's premise no longer holds; a program
-    /// upgrade must migrate to global aggregation before buybacks can
-    /// resume.
-    MultiMarketRequiresGlobalAggregation,
+    /// `fund × DEN` < `exposure × NUM`. The insurance fund is not
+    /// over-collateralized enough relative to current protocol exposure.
+    RatioBelowThreshold,
     /// A `checked_*` arithmetic operation returned `None` — either while
     /// aggregating per-market exposure or while running the cross-multiply
     /// ratio comparison. Treated as a fail-closed condition; should be
     /// unreachable in practice but defends against pathological input.
+    /// Conventionally placed last as a cross-cutting bucket; do not
+    /// re-sort alphabetically.
     MathOverflow,
 }
 
@@ -135,7 +145,6 @@ pub struct MarketView {
 /// an invalid `MarketView`.
 ///
 /// Returns `Ok(0)` for an empty market list.
-#[inline]
 pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBlocker> {
     let mut total: u128 = 0;
     for m in markets {
