@@ -1,0 +1,4 @@
+# Lock line endings to LF in the repository regardless of the
+# contributor's OS. text=auto lets git detect text vs binary files
+# by content sniffing, and eol=lf forces LF on every checkout.
+* text=auto eol=lf

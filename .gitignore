@@ -8,3 +8,16 @@ Thumbs.db
 target/
 /Cargo.lock
 crates/**/Cargo.lock
+**/*.rs.bk
+
+# Coverage tooling output
+*.profraw
+*.profdata
+
+# Local cargo overrides (per-clone, not committed)
+.cargo/config.local.toml
+
+# Profiling output (root-only — per-subdir flamegraphs are kept by intent)
+/flamegraph.svg
+/perf.data
+/perf.data.old

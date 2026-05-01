@@ -44,6 +44,12 @@ pub const BPS_DENOMINATOR: u128 = 10_000;
 // const assertion fails the build rather than the tests.
 const _: () = assert!(BUYBACK_RATIO_THRESHOLD_NUM > BUYBACK_RATIO_THRESHOLD_DEN);
 
+// Compile-time invariant: the basis-points denominator must be non-zero
+// so the per-market division `weighted / BPS_DENOMINATOR` cannot panic
+// at runtime. Defense in depth alongside the existing runtime
+// `bps_denominator_lock` test.
+const _: () = assert!(BPS_DENOMINATOR > 0);
+
 /// Hard fail-closed assertion on the per-slab buyback implementation.
 ///
 /// At launch the protocol has one live market, making per-slab semantically
