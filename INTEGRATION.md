@@ -25,6 +25,8 @@ A reference implementation of steps 1–3 is staged in this repo at [`crates/buy
 
 Caller-side adapter (handler concern, not file content): the handler that wires `buyback_eligible` reads the insurance fund balance as `InsuranceFund::balance: U128` — a BPF-alignment wrapper, not `u128`. Adapt with `insurance_fund.balance.get()` to obtain `u128`, then narrow to `u64` via `u64::try_from(...)` (not `as u64`); the `try_from` failure is a fail-closed `MathOverflow` path. Same treatment for `insurance_floor` if it carries `U128`.
 
+Field-name mapping: when constructing `MarketView`, the staged field `maintenance_bps` is populated from the destination's `RiskParams::maintenance_margin_bps` (defined in `dcccrypto/percolator/src/percolator.rs`). The staged field is `u64` to match the destination width directly, so the assignment is a plain field-init (`MarketView { maintenance_bps: risk.maintenance_margin_bps, ... }`) with no width adapter. The shorter staged name follows the surrounding `oi_eff_long_q` brevity convention.
+
 Verification: steps 1–3 pass `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt -- --check`, and `cargo doc --no-deps` in the staging crate. Step 4's Kani harnesses are verified via `cargo kani --lib` once integrated upstream.
 
 Transfer record: not yet merged.
