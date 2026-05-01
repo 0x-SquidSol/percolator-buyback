@@ -49,3 +49,47 @@ Relationship to `trigger_buyback`: the vault's `trigger_buyback` instruction is 
 Verification: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` against the wrapper crate, following whatever scaffolding `dcccrypto/percolator-prog` already uses for its existing instruction tests.
 
 Transfer record: not yet merged.
+
+## `dcccrypto/percolator-vault`
+
+**Status:** spec-ready — not yet implemented.
+
+The vault hosts the buyback's gate logic, the persistent buyback state, the buyback pool ATA, and the two events that downstream services index. The vault PDA is already the wrapper's admin (existing top-up / withdraw flows), so adding the buyback CPI is the same architectural seam. This entry depends on the math crate (for `assert_per_slab_invariant`, `total_protocol_exposure`, `buyback_eligible`) and the wrapper (for `WithdrawForBuyback`) both being merged first.
+
+Steps:
+
+1. Add a `BuybackState` PDA at seeds `[b"buyback_state", slab_pubkey]`, holding `last_buyback_ts: i64`, `buyback_count: u64`, `drain_this_year: u64`, `last_year_reset_ts: i64`, plus the `settle_disabled` kill-switch flag (covered in step 6). Locker rule: fields are append-only forever after this commit — never reorder, never resize, never repurpose reserved bytes.
+2. Add a buyback pool ATA at seeds `[b"buyback_pool", slab_pubkey]`, owned by the vault program, holding the slab's collateral mint. Per PROPOSAL.md §11 ("Buyback pool custody — fresh PDA owned by the vault program") this is one ATA per slab, never shared.
+3. Add a constants module with `PUMPSWAP_PROGRAM_ID`, `CANONICAL_POOL`, `CANONICAL_LP_MINT`, `CANONICAL_SLAB`, and `PUMPSWAP_PROGRAM_DATA_SHA256`. The sha pin is captured from PumpSwap's program-data account at vault deploy time — its job is to fail-close `settle_buyback` if PumpSwap ships an upgraded binary (per PROPOSAL.md §11 "PumpSwap upgrade authority — single key, not renounced"). Recovery from a stuck slice goes through `emergency_drain_buyback_pool` (step 6).
+4. Add `trigger_buyback`: permissionless instruction. Handler order is **canonical-slab check → lazy-init `BuybackState` → math-crate gates → CPI to wrapper → stamp state**. The lazy-init replaces a separate `InitBuyback` admin instruction — the first successful trigger pays rent for the PDA, so no admin step precedes the first event. Caller-side adapters from the math-crate entry above apply (`U128.get()` for `insurance_fund.balance` and `insurance_floor`; `RiskParams::maintenance_margin_bps` populates `MarketView::maintenance_bps`).
+5. Add `settle_buyback`: permissionless instruction the cranker calls after burning the LP receipt. Validates the round-trip claim against on-chain state and the canonical PumpSwap pool (validation list below). Emits `LiquidityLocked` on success.
+6. Add `emergency_drain_buyback_pool`: returns the buyback pool's contents to the slab insurance fund. Callable only when `BuybackState.settle_disabled == 1`. The flag is **set only by program upgrade** — not by any runtime instruction — preserving PROPOSAL.md §1's "no admin tunable that turns buybacks off." It is a code-level kill switch flipped exactly when PumpSwap drift or another externality strands a slice and operator rescue is required.
+7. Emit `BuybackTriggered` (after `trigger_buyback`'s state stamps) and `LiquidityLocked` (after `settle_buyback`'s validation). Event field layout is append-only from this commit forward — fields can be added at the tail in later commits but never reordered or removed.
+
+Trigger-side contracts (in addition to the math crate's gate logic):
+
+- **Canonical-slab check, not account counting.** The N=1 invariant is enforced via `slab.key() == CANONICAL_SLAB` (byte equality on the pubkey constant). Counting cranker-supplied accounts is spoofable; the pubkey check is not. When a second slab launches, the vault MUST be upgraded — there is no on-chain path that re-enables buyback under multi-market without a binary upgrade.
+- **Clock from syscall, not account.** Use `Clock::get()` inside the handler. Do NOT accept a clock account in the instruction account list — a forgeable timestamp would bypass the cooldown gate.
+- **CPI signing seeds.** The CPI to the wrapper's `WithdrawForBuyback` is signed with `[b"vault", slab_pubkey, &[vault_authority_bump]]` — the vault authority PDA bump, distinct from `BuybackState.bump` and `buyback_pool.bump`. Mixing these breaks the CPI signature.
+- **Zero-slice no-stamp rule.** When `buyback_eligible` returns `Ok(0)` (fund just above floor, proportional truncates), the handler returns early WITHOUT stamping `last_buyback_ts`, `buyback_count`, or `drain_this_year`. PROPOSAL.md §5.1.1 requires this — there is no point burning a 24-hour cooldown slot on a zero-byte event.
+- **Annual drain hard cap (50%).** Before withdrawal, assert `drain_this_year + slice <= prior_year_fund_balance / 2`. On breach, return `BuybackError::AnnualDrainCapped` WITHOUT stamping cooldown (the next eligible slot retries). Reset `drain_this_year = 0` when `now - last_year_reset_ts >= 31_536_000` (365 days). This cap is NOT in PROPOSAL.md §11 — it is an implementation-side defense in depth that the vault adds on top of the proposal's per-event cap.
+
+Settle-side validation list (each item is a hard reject; settle is the trust boundary for the entire round-trip):
+
+1. `supplied_lp_mint_pubkey == CANONICAL_LP_MINT` (byte equality).
+2. `lp_mint_account.owner == &spl_token_2022::ID` (program ownership).
+3. `lp_mint_account.mint_authority == derived_pumpswap_pool_pda` — defends against a substituted mint with the same pubkey shape.
+4. `lp_mint_account` extension list ⊆ allowed set (currently empty; runtime check, not deploy-time-only).
+5. `lp_token_account.owner == &spl_token_2022::ID`.
+6. `lp_token_account.mint == CANONICAL_LP_MINT`.
+7. `lp_token_account.amount == 0` (the cranker's post-burn balance).
+8. `buyback_pool.amount == 0` (the slice has fully cycled out).
+9. `cranker.signed && lp_token_account.owner_field == cranker.key()`.
+10. The cranker-supplied `round_trip_id: u64` is appended to BuybackState's ring buffer of recently-settled IDs (attribution only, not authentication).
+11. **PumpSwap binary sha pin.** The instruction account list takes one extra read-only account (`pumpswap_program_data`, owned by `BPFLoaderUpgradeable`, derived from `PUMPSWAP_PROGRAM_ID`). The handler sha256s its bytes and asserts equality with `PUMPSWAP_PROGRAM_DATA_SHA256`. **Cost: ~270k CU** — the program-data account is ~200KB and sha256 over it is non-trivial; settle's CU budget must accommodate this leg. The owner check on the account is mandatory: without it, a cranker could supply a cranker-controlled account whose bytes happen to hash to the pinned value.
+
+Relationship to math + wrapper: math crate's `buyback_eligible` is called inside `trigger_buyback`'s gate sequence; wrapper's `WithdrawForBuyback` is CPI'd into immediately after the gates pass, signed by the vault authority PDA. Both must be merged before any of the vault's commits are useful — until then, the vault entry stays at `spec-ready`.
+
+Verification: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` against the vault crate, plus a devnet integration test that walks a slab through trigger → cranker LP burn (mocked) → settle, asserting both events and BuybackState transitions at each boundary.
+
+Transfer record: not yet merged.
