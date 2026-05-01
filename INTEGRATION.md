@@ -23,7 +23,7 @@ Steps:
 
 A reference implementation of steps 1–3 is staged in this repo at [`crates/buyback-staging/src/buyback.rs`](crates/buyback-staging/src/buyback.rs). The file is stdlib-only, with no Solana or crate-internal dependencies. To transfer, copy the file into `dcccrypto/percolator/src/buyback.rs` and add `pub mod buyback;` to that crate's `lib.rs`. Adapt to the receiving crate's lint, formatting, and error-prelude conventions before merging — minor cleanup is expected. Once merged, the staging copy is no longer authoritative; subsequent edits in either repo are mirrored to the other in a follow-up PR.
 
-Verification: steps 1–3 pass `cargo build -p buyback`, `cargo test -p buyback`, `cargo clippy -p buyback -- -D warnings`, `cargo fmt -p buyback -- --check`, and `cargo doc -p buyback --no-deps` against the staging crate. Step 4's Kani harnesses are verified via `cargo kani --lib` once integrated upstream.
+Verification: steps 1–3 pass `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt -- --check`, and `cargo doc --no-deps` in the staging crate. Step 4's Kani harnesses are verified via `cargo kani --lib` once integrated upstream.
 
 Transfer record: not yet merged.
 
