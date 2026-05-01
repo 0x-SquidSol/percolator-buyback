@@ -15,6 +15,17 @@
 //! PROPOSAL.md §4 and §7.5). Changing any of them requires a program
 //! upgrade — there is no admin-tunable path.
 
+// Explicit import of std's two-argument `Result` so this module's
+// signatures are insulated from any single-argument `pub type Result<T>`
+// alias declared at a downstream crate's lib root (a common convention
+// where the crate-wide error type is folded into the `Result` name).
+// Without this `use`, transferring the file into such a crate would
+// fail to compile with E0107 — the parent's one-arg alias shadows the
+// prelude's two-arg form, and `Result<T, BuybackBlocker>` becomes a
+// wrong-arity instantiation. `Ok(_)` and `Err(_)` variant constructors
+// are unaffected (they come via the prelude as values, not types).
+use core::result::Result;
+
 /// Numerator of the insurance-fund-to-exposure ratio threshold (1.5×).
 ///
 /// Paired with [`BUYBACK_RATIO_THRESHOLD_DEN`]. The eligibility gate
