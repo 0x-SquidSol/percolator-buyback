@@ -134,9 +134,14 @@ pub struct MarketView {
     /// Maintenance margin requirement in basis points, read directly
     /// from the slab's risk parameters (PROPOSAL.md §11
     /// "Maintenance bps source": per-market and immutable post-init).
-    /// Range fits in `u16` since the maximum representable value is
-    /// 10 000 — see [`BPS_DENOMINATOR`].
-    pub maintenance_bps: u16,
+    /// Width matches the on-chain `RiskParams::maintenance_margin_bps:
+    /// u64` so the handler can pass the field through without a
+    /// narrowing adapter — an `as u16` truncation could wrap a
+    /// corrupted upstream value below 10 000 and silently pass the
+    /// runtime check below. The `<= BPS_DENOMINATOR` invariant is
+    /// enforced at runtime by [`total_protocol_exposure`] via
+    /// [`BuybackBlocker::MathOverflow`].
+    pub maintenance_bps: u64,
 }
 
 /// Sums per-market exposure across all live markets.
@@ -355,7 +360,7 @@ mod tests {
         assert_eq!(MAX_MARKETS_FOR_PER_SLAB, 1);
     }
 
-    fn sample_market(long: u128, short: u128, price: u128, bps: u16) -> MarketView {
+    fn sample_market(long: u128, short: u128, price: u128, bps: u64) -> MarketView {
         MarketView {
             oi_eff_long_q: long,
             oi_eff_short_q: short,
