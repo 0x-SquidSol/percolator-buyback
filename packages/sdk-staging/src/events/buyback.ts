@@ -105,7 +105,13 @@ export interface BuybackTriggered {
   slice: bigint;
   /** Q-format exposure used in the ratio gate. */
   totalProtocolExposure: bigint;
-  /** `fund × 10_000 / exposure` in basis points; `u64::MAX` if exposure was 0. */
+  /**
+   * `fund × 10_000 / exposure` in basis points; `u64::MAX`
+   * (`18446744073709551615n`) when exposure was 0. Use
+   * {@link isRatioBpsSentinel} to test for the sentinel — naive
+   * arithmetic on the raw value will produce visibly nonsensical
+   * results (~1.8e15 bps).
+   */
   ratioBps: bigint;
   /** Destination ATA receiving the slice. */
   buybackPool: PublicKey;
@@ -160,7 +166,13 @@ export interface LiquidityLocked {
   lpTokensBurned: bigint;
   /** Canonical PumpSwap pool — always equals `CANONICAL_POOL` post-validation. */
   poolPubkey: PublicKey;
-  /** `perc_bought × 10^12 / sol_paired` (Q12 ratio); `u128::MAX` if sol_paired was 0. */
+  /**
+   * `perc_bought × 10^12 / sol_paired` (Q12 ratio); `u128::MAX`
+   * (`340282366920938463463374607431768211455n`) when sol_paired was 0.
+   * Use {@link isRealizedPercPerSolSentinel} to test for the
+   * sentinel — naive arithmetic on the raw value will silently
+   * dominate any aggregate.
+   */
   realizedPercPerSol: bigint;
 }
 
@@ -190,4 +202,40 @@ export function decodeLiquidityLocked(data: Uint8Array): LiquidityLocked {
     poolPubkey,
     realizedPercPerSol,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Sentinel predicates
+// ═══════════════════════════════════════════════════════════════
+//
+// On-chain `trigger_buyback` and `settle_buyback` saturate two ratio
+// fields when their denominator is 0, rather than emitting a
+// divide-by-zero. Consumers that aggregate or display these fields
+// must treat the sentinel as "no meaningful ratio for this event",
+// not as a real measurement — `Number(b) / 10_000` on the sentinel
+// produces ~1.8e15 / 3.4e38 and silently corrupts averages and
+// dashboards. Use the predicates below to branch.
+
+/** Sentinel value emitted in `BuybackTriggered.ratioBps` when exposure was 0. */
+export const RATIO_BPS_SENTINEL: bigint = 0xffff_ffff_ffff_ffffn;
+
+/** Sentinel value emitted in `LiquidityLocked.realizedPercPerSol` when sol_paired was 0. */
+export const REALIZED_PERC_PER_SOL_SENTINEL: bigint = (1n << 128n) - 1n;
+
+/**
+ * True when `ratioBps` carries the divide-by-zero sentinel
+ * ({@link RATIO_BPS_SENTINEL}, i.e. on-chain `total_protocol_exposure`
+ * was 0). Returns false for any real value, including u64::MAX-1.
+ */
+export function isRatioBpsSentinel(ratioBps: bigint): boolean {
+  return ratioBps === RATIO_BPS_SENTINEL;
+}
+
+/**
+ * True when `realizedPercPerSol` carries the divide-by-zero sentinel
+ * ({@link REALIZED_PERC_PER_SOL_SENTINEL}, i.e. on-chain `sol_paired`
+ * was 0). Returns false for any real value.
+ */
+export function isRealizedPercPerSolSentinel(realizedPercPerSol: bigint): boolean {
+  return realizedPercPerSol === REALIZED_PERC_PER_SOL_SENTINEL;
 }

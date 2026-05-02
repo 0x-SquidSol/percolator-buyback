@@ -14,6 +14,10 @@ import {
   LIQUIDITY_LOCKED_BYTE_LENGTH,
   decodeBuybackTriggered,
   decodeLiquidityLocked,
+  RATIO_BPS_SENTINEL,
+  REALIZED_PERC_PER_SOL_SENTINEL,
+  isRatioBpsSentinel,
+  isRealizedPercPerSolSentinel,
 } from "./buyback.js";
 
 // ═══════════════════════════════════════════════════════════════
@@ -307,5 +311,81 @@ describe("byteOffset regression", () => {
     const evt = decodeLiquidityLocked(view);
     expect(evt.poolPubkey.toBase58()).toBe(ANOTHER_PUBKEY.toBase58()); // data.slice path
     expect(evt.sliceUsdc).toBe(1_000_000n); // DataView path
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Sentinel predicates
+// ═══════════════════════════════════════════════════════════════
+
+describe("RATIO_BPS_SENTINEL / isRatioBpsSentinel", () => {
+  it("pins the sentinel value to u64::MAX", () => {
+    expect(RATIO_BPS_SENTINEL).toBe(0xffff_ffff_ffff_ffffn);
+  });
+
+  it("returns true for the sentinel value", () => {
+    expect(isRatioBpsSentinel(RATIO_BPS_SENTINEL)).toBe(true);
+  });
+
+  it("returns false for u64::MAX - 1 (one below the sentinel)", () => {
+    expect(isRatioBpsSentinel(0xffff_ffff_ffff_ffffn - 1n)).toBe(false);
+  });
+
+  it("returns false for typical real ratios (1.5×, 2×, 10×)", () => {
+    expect(isRatioBpsSentinel(15_000n)).toBe(false);
+    expect(isRatioBpsSentinel(20_000n)).toBe(false);
+    expect(isRatioBpsSentinel(100_000n)).toBe(false);
+  });
+
+  it("returns false for 0n", () => {
+    expect(isRatioBpsSentinel(0n)).toBe(false);
+  });
+
+  it("decodeBuybackTriggered round-trips the sentinel and isRatioBpsSentinel reports it", () => {
+    const data = concat(
+      i64LE(0n),
+      u64LE(0n),
+      u64LE(0n),
+      u128LE(0n),
+      u64LE(RATIO_BPS_SENTINEL),
+      pubkeyBytes(FIXED_PUBKEY),
+    );
+    const evt = decodeBuybackTriggered(data);
+    expect(evt.ratioBps).toBe(RATIO_BPS_SENTINEL);
+    expect(isRatioBpsSentinel(evt.ratioBps)).toBe(true);
+  });
+});
+
+describe("REALIZED_PERC_PER_SOL_SENTINEL / isRealizedPercPerSolSentinel", () => {
+  it("pins the sentinel value to u128::MAX", () => {
+    expect(REALIZED_PERC_PER_SOL_SENTINEL).toBe((1n << 128n) - 1n);
+  });
+
+  it("returns true for the sentinel value", () => {
+    expect(isRealizedPercPerSolSentinel(REALIZED_PERC_PER_SOL_SENTINEL)).toBe(true);
+  });
+
+  it("returns false for u128::MAX - 1", () => {
+    expect(isRealizedPercPerSolSentinel((1n << 128n) - 2n)).toBe(false);
+  });
+
+  it("returns false for typical Q12 ratios", () => {
+    expect(isRealizedPercPerSolSentinel(60_000_000_000_000_000n)).toBe(false);
+    expect(isRealizedPercPerSolSentinel(0n)).toBe(false);
+  });
+
+  it("decodeLiquidityLocked round-trips the sentinel and isRealizedPercPerSolSentinel reports it", () => {
+    const data = concat(
+      u64LE(0n),
+      u64LE(0n),
+      u64LE(0n),
+      u64LE(0n),
+      u64LE(0n),
+      pubkeyBytes(FIXED_PUBKEY),
+      u128LE(REALIZED_PERC_PER_SOL_SENTINEL),
+    );
+    const evt = decodeLiquidityLocked(data);
+    expect(evt.realizedPercPerSol).toBe(REALIZED_PERC_PER_SOL_SENTINEL);
+    expect(isRealizedPercPerSolSentinel(evt.realizedPercPerSol)).toBe(true);
   });
 });
