@@ -24,6 +24,20 @@
  * uses `log.info(...)` / `log.warn(...)` / `log.error(...)` with
  * structured fields; the integrator's `createLogger` honors the same
  * `info`/`warn`/`error` interface so the call sites need no change.
+ *
+ * **Why are `BuybackLogFields` and `Logger` un-exported?** Both
+ * interfaces describe the shape of the staging-time `log` const, and
+ * neither has a destination-side equivalent in `@percolatorct/shared`.
+ * Exporting them would invite a service file to write `import type
+ * { Logger } from "../lib/log.js"` — that named import dangles at
+ * transfer time, when this file is dropped from the destination.
+ * Keeping the types file-local pushes the failure into staging-time
+ * tsc rather than letting it leak into post-transfer destination
+ * code. Service files lose nothing: TypeScript's contextual typing
+ * propagates `BuybackLogFields` through the `log: Logger` declaration,
+ * so the field schema (and the `outcome` literal union) still
+ * autocompletes at every `log.info(msg, { ... })` call site without
+ * requiring a named-type import.
  */
 
 /**
@@ -40,7 +54,7 @@
  * Staged call sites pass only domain fields, byte-identical to
  * destination call sites like `logger.info("msg", { slot })`.
  */
-export interface BuybackLogFields {
+interface BuybackLogFields {
   /** Optional — Solana slab pubkey when the log refers to a specific market. */
   slab?: string;
   /** Optional — current Solana slot when the log was emitted. */
@@ -63,7 +77,7 @@ export interface BuybackLogFields {
  * `createLogger` returns an object with the same `info`/`warn`/`error`
  * methods.
  */
-export interface Logger {
+interface Logger {
   info(message: string, fields?: BuybackLogFields): void;
   warn(message: string, fields?: BuybackLogFields): void;
   error(message: string, fields?: BuybackLogFields): void;

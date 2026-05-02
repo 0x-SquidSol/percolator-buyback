@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { log, type Logger, type BuybackLogFields } from "../../src/lib/log.js";
+import { log } from "../../src/lib/log.js";
 
 describe("log", () => {
   it("exposes the Logger interface (info/warn/error)", () => {
@@ -54,21 +54,23 @@ describe("log", () => {
 });
 
 describe("BuybackLogFields type contract", () => {
-  it("accepts the documented outcome values without a type error", () => {
-    // Compile-time pin: each outcome string the service will emit must be
-    // a member of the BuybackLogFields union. Adding a new outcome here
-    // forces a corresponding spec update in src/lib/log.ts.
-    const wouldFire: BuybackLogFields = { outcome: "would-fire" };
-    const blocked: BuybackLogFields = { outcome: "blocked" };
-    const rpcError: BuybackLogFields = { outcome: "rpc-error" };
-    const notLive: BuybackLogFields = { outcome: "not-live" };
-    expect([wouldFire, blocked, rpcError, notLive]).toHaveLength(4);
-  });
-
-  it("Logger interface is structurally satisfied by console", () => {
-    // Compile-time pin: console must remain assignable to Logger so the
-    // staging-time `export const log: Logger = console` keeps working.
-    const asLogger: Logger = console;
-    expect(asLogger).toBe(console);
+  it("accepts the four documented outcome values via contextual typing", () => {
+    // Compile-time pin: each outcome string the service will emit must
+    // be a member of the BuybackLogFields union. The test exercises the
+    // union via log.info's contextual type rather than a named import,
+    // matching the un-exported BuybackLogFields convention. Adding a
+    // new outcome here forces a corresponding spec update in
+    // src/lib/log.ts; passing an unknown string would fail tsc on the
+    // staging-time `pnpm lint` pass.
+    const spy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      log.info("test", { outcome: "would-fire" });
+      log.info("test", { outcome: "blocked" });
+      log.info("test", { outcome: "rpc-error" });
+      log.info("test", { outcome: "not-live" });
+      expect(spy).toHaveBeenCalledTimes(4);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
