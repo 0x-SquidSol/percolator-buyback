@@ -28,4 +28,6 @@ crates/**/Cargo.lock
 # TypeScript staging crates: install artifacts only, lockfiles ARE committed
 node_modules/
 **/node_modules/
+.pnpm-store/
+**/.pnpm-store/
 *.tsbuildinfo
