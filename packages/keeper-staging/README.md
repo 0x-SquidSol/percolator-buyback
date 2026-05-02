@@ -42,8 +42,14 @@ This README does not enumerate file destinations — that list drifted
 once on the SDK side (since fixed) and would drift again. Instead:
 
 - **Canonical transfer spec:** [`INTEGRATION.md`](../../INTEGRATION.md)
-  → `## dcccrypto/percolator-keeper` (when authored).
+  → `## dcccrypto/percolator-keeper`. The section is authored once
+  there is enough substantive content to populate it (file paths,
+  transfer recipe, verification block) — same pattern as the SDK
+  staging entry, which landed alongside the staged source rather
+  than ahead of it.
 - **Per-file destination:** the header comment at the top of each
   `src/**/*.ts` file documents where that specific file lands.
 
-If the two disagree, INTEGRATION.md wins and the file header is a bug.
+Once the canonical entry is authored, it supersedes any per-file
+header that conflicts. Until then, the file headers are the binding
+specification.
