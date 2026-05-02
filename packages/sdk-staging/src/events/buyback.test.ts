@@ -251,3 +251,61 @@ describe("field-order regression", () => {
     expect(evt.realizedPercPerSol).toBe(66n);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// byteOffset regression — Cursor must honor non-zero view offsets
+// ═══════════════════════════════════════════════════════════════
+//
+// Two byteOffset-sensitive paths exist in the Cursor:
+//   1. DataView construction → readU64 / readI64 / readU128
+//   2. data.slice()           → readPubkey
+// Each test covers one decoder against both paths. The backing
+// buffer is padded with 0xff sentinel bytes so any offset-ignoring
+// read produces visibly-wrong values rather than silent zero
+// pass-through. Prefix sizes are odd primes (7, 11) to defeat any
+// accidental alignment assumption.
+
+describe("byteOffset regression", () => {
+  it("decodeBuybackTriggered: decodes correctly from a non-zero-byteOffset Uint8Array view", () => {
+    const PREFIX = 7;
+    const payload = concat(
+      i64LE(1_700_000_000n),
+      u64LE(1_000_000_000n),
+      u64LE(1_000_000n),
+      u128LE(500_000_000n),
+      u64LE(20_000n),
+      pubkeyBytes(FIXED_PUBKEY),
+    );
+    const backing = new Uint8Array(PREFIX + payload.length + PREFIX);
+    backing.fill(0xff);
+    backing.set(payload, PREFIX);
+    const view = backing.subarray(PREFIX, PREFIX + payload.length);
+    expect(view.byteOffset).toBe(PREFIX);
+
+    const evt = decodeBuybackTriggered(view);
+    expect(evt.timestamp).toBe(1_700_000_000n); // DataView path
+    expect(evt.buybackPool.toBase58()).toBe(FIXED_PUBKEY.toBase58()); // data.slice path
+  });
+
+  it("decodeLiquidityLocked: decodes correctly from a non-zero-byteOffset Uint8Array view", () => {
+    const PREFIX = 11;
+    const payload = concat(
+      u64LE(1_000_000n),
+      u64LE(50_000_000_000n),
+      u64LE(1_500_000_000_000n),
+      u64LE(25_000_000_000n),
+      u64LE(193_649_167_310n),
+      pubkeyBytes(ANOTHER_PUBKEY),
+      u128LE(60_000_000_000_000_000n),
+    );
+    const backing = new Uint8Array(PREFIX + payload.length + PREFIX);
+    backing.fill(0xff);
+    backing.set(payload, PREFIX);
+    const view = backing.subarray(PREFIX, PREFIX + payload.length);
+    expect(view.byteOffset).toBe(PREFIX);
+
+    const evt = decodeLiquidityLocked(view);
+    expect(evt.poolPubkey.toBase58()).toBe(ANOTHER_PUBKEY.toBase58()); // data.slice path
+    expect(evt.sliceUsdc).toBe(1_000_000n); // DataView path
+  });
+});
