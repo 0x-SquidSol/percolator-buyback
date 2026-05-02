@@ -27,6 +27,15 @@ At transfer time the alias falls away; the integrator's import
 resolves to the real npm dep, with no rename required in the source
 files.
 
+The destination keeper also depends on `@percolatorct/shared` (a
+sibling utility package). It is **deliberately omitted** here until a
+buyback source file actually imports a symbol from it. If that
+happens, mirror the SDK pattern — add a `shared-staging/` sibling
+package with stubbed exports, plus matching `paths` and
+`resolve.alias` entries — rather than installing the published
+package speculatively (which may live on a private registry that
+contributors lack auth for).
+
 ## What transfers
 
 This README does not enumerate file destinations — that list drifted
