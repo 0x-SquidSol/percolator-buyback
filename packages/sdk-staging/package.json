@@ -9,7 +9,7 @@
   },
   "description": "Verification-only toolchain for the buyback SDK staging. The integrator transfers src/ only — package.json, tsconfig.json, and lockfile do NOT cross over.",
   "scripts": {
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {
