@@ -1,3 +1,17 @@
+/**
+ * Verification-only test suite for `src/lib/log.ts`. **Does NOT
+ * transfer** — proves the staged logger contract (Logger interface
+ * shape, BuybackLogFields outcome union, primitive-only index
+ * signature) is correct at the moment of transfer. Destination
+ * keeper uses vitest too, but ships its own tests against its own
+ * fixture infrastructure (env-guards, RPC mocks, Supabase doubles)
+ * — staging tests would dangle on the `import { log } from
+ * "../../src/lib/log.js"` reference once `lib/log.ts` is dropped at
+ * transfer per its own header. Mirrors the math-crate / sdk-staging
+ * precedent: staging tests verify the staged source, then stay
+ * home. See `INTEGRATION.md` `## dcccrypto/percolator-keeper` once
+ * authored.
+ */
 import { describe, it, expect, vi } from "vitest";
 import { log } from "../../src/lib/log.js";
 
