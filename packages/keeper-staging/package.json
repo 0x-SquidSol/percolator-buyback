@@ -1,0 +1,25 @@
+{
+  "name": "@percolator/keeper-staging",
+  "private": true,
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "description": "Verification-only toolchain for the buyback keeper staging. The integrator transfers src/ only — package.json, tsconfig.json, vitest.config.ts, and the lockfile do NOT cross over.",
+  "scripts": {
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^4.0.18"
+  }
+}
