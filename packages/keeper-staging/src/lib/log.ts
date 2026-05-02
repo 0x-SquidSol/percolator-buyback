@@ -5,7 +5,7 @@
  * everywhere a service file would otherwise call `console.log` /
  * `console.warn` / `console.error` directly. Centralizing the surface
  * means the integrator's transfer-time swap to the destination's
- * logger (`createLogger("buyback")` from `@percolatorct/shared`) is
+ * logger (`createLogger("keeper:buyback")` from `@percolatorct/shared`) is
  * a one-line edit to this file rather than every call site.
  *
  * **Transfer destination:** does NOT cross over. The destination
@@ -13,7 +13,7 @@
  * in each service. At transfer, replace each `import { log } from
  * "../lib/log.js"` in our staged services with the destination's
  * `import { createLogger } from "@percolatorct/shared"` plus a
- * top-of-file `const log = createLogger("buyback");`.
+ * top-of-file `const log = createLogger("keeper:buyback");`.
  *
  * **Why not match the destination's createLogger shape locally?**
  * The destination's logger lives in `@percolatorct/shared` (a
@@ -32,13 +32,13 @@
  * `createLogger` swap can preserve field names verbatim and downstream
  * log consumers (Sentry, Loki, Discord webhooks) keep working.
  *
- * The service-namespace tag (`"buyback"`) is intentionally NOT a field
- * here. The destination's `createLogger("buyback")` injects the
- * namespace at construction time — duplicating it on every call site
- * would force the integrator to strip it at transfer (or risk
- * double-tagging / overwriting the constructor-bound value). Staged
- * call sites pass only domain fields, byte-identical to destination
- * call sites like `logger.info("msg", { slot })`.
+ * The service-namespace tag (`"keeper:buyback"`) is intentionally NOT
+ * a field here. The destination's `createLogger("keeper:buyback")`
+ * injects the namespace at construction time — duplicating it on
+ * every call site would force the integrator to strip it at transfer
+ * (or risk double-tagging / overwriting the constructor-bound value).
+ * Staged call sites pass only domain fields, byte-identical to
+ * destination call sites like `logger.info("msg", { slot })`.
  */
 export interface BuybackLogFields {
   /** Optional — Solana slab pubkey when the log refers to a specific market. */
@@ -71,7 +71,7 @@ export interface Logger {
 
 /**
  * Staging-time logger. Plain `console`. At transfer the integrator
- * replaces this export with `createLogger("buyback")` from
+ * replaces this export with `createLogger("keeper:buyback")` from
  * `@percolatorct/shared` (single-line edit).
  */
 export const log: Logger = console;
