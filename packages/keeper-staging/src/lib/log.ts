@@ -65,8 +65,16 @@ interface BuybackLogFields {
   blocker?: string;
   /** Optional — slice amount (collateral base units) on a "would-fire" outcome. */
   slice?: string;
-  /** Optional — additional unstructured context. */
-  [key: string]: unknown;
+  /**
+   * Optional — additional ad-hoc context. Restricted to primitive
+   * values so the type system blocks accidental object logging
+   * (e.g. `{ keypair }`, `{ ...rpcConfig }`, `{ connection }`) which
+   * would silently leak secrets and full RPC payloads to the
+   * destination's downstream consumers (Sentry, Loki, Discord
+   * webhooks). Stringify objects at the call site if you really need
+   * to log them.
+   */
+  [key: string]: string | number | bigint | boolean | null | undefined;
 }
 
 /**

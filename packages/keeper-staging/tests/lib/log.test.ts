@@ -73,4 +73,31 @@ describe("BuybackLogFields type contract", () => {
       spy.mockRestore();
     }
   });
+
+  it("rejects object-shaped values via the tightened index signature", () => {
+    // Compile-time pin: the index signature accepts only primitives,
+    // so accidental object logging — `{ keypair }`, `{ ...rpcConfig }`,
+    // `{ connection }` — fails at staging-time `pnpm lint`. Each
+    // ts-expect-error below MUST stay an error; if any starts passing,
+    // the index signature has been widened and the secret-leak class
+    // is back open.
+    const spy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      // @ts-expect-error — object value on an ad-hoc field is rejected
+      log.info("nope", { keypair: { secret: "leak" } });
+      // @ts-expect-error — array value on an ad-hoc field is rejected
+      log.info("nope", { signers: ["a", "b"] });
+      // @ts-expect-error — Symbol value is rejected
+      log.info("nope", { sym: Symbol("x") });
+      // Primitives DO pass — these lines must NOT have ts-expect-error.
+      log.info("ok", { txid: "5xKj..." });
+      log.info("ok", { attempt: 3 });
+      log.info("ok", { lamports: 5000n });
+      log.info("ok", { dryRun: true });
+      log.info("ok", { lastSeen: null });
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
