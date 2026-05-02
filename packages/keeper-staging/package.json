@@ -4,9 +4,6 @@
   "version": "0.0.0",
   "license": "Apache-2.0",
   "type": "module",
-  "engines": {
-    "node": ">=20.0.0"
-  },
   "description": "Verification-only toolchain for the buyback keeper staging. The integrator transfers src/ only — package.json, tsconfig.json, vitest.config.ts, and the lockfile do NOT cross over.",
   "scripts": {
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
