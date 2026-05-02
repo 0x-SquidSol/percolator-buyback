@@ -1,3 +1,12 @@
+/**
+ * Verification-only test suite for `errors/buyback.ts`. **Does NOT
+ * transfer** — proves the staged code is correct at the moment of
+ * transfer; the destination writes its own tests against its own
+ * fixture infrastructure (see `dcccrypto/percolator-sdk/test/`,
+ * which is `tsx` + hand-rolled asserts, not vitest). Mirrors the
+ * math-crate precedent: staging tests verify the staged source, then
+ * stay home. See `INTEGRATION.md` `## dcccrypto/percolator-sdk`.
+ */
 import { describe, it, expect } from "vitest";
 import {
   BUYBACK_BLOCKER,
