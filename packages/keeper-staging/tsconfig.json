@@ -13,8 +13,7 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@percolatorct/sdk": ["../sdk-staging/src/index.ts"],
-      "@percolatorct/sdk/*": ["../sdk-staging/src/*"]
+      "@percolatorct/sdk": ["../sdk-staging/src/index.ts"]
     }
   },
   "include": ["src/**/*"],
