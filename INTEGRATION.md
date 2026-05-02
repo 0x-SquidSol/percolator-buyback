@@ -99,3 +99,28 @@ Relationship to math + wrapper: math crate's `buyback_eligible` is called inside
 Verification: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` against `dcccrypto/percolator-stake`, plus a devnet integration test that walks a slab through trigger → cranker LP burn (mocked) → settle, asserting both events and `BuybackState` transitions at each boundary.
 
 Transfer record: not yet merged.
+
+## `dcccrypto/percolator-sdk`
+
+**Status:** staged — awaiting transfer.
+
+The SDK additions cover the TypeScript surface every off-chain consumer (keeper, indexer, ops scripts) needs once the stake-program buyback ix lands: instruction encoders for the three new ix variants, PDA derivations for the two new pool-keyed addresses, decoders for the two emitted events, and a TS mirror of the math crate's `BuybackBlocker` enum so structured logs surface gate-failure variants by name. Pure TypeScript; no Solana on-chain dependency. The destination conventions (ESM, Node ≥ 20, TS ^5.7.2 strict, `bigint | string` numeric inputs, `Uint8Array` outputs, single-byte instruction discriminator, pool-keyed subsidiary PDAs, `<Name>Args` interface + `encode<Name>(args)` function pairs) are mirrored exactly so the merge is copy-and-paste, not translation.
+
+Steps:
+
+1. Append three encoders to `src/solana/stake.ts`: `encodeStakeTriggerBuyback`, `encodeStakeSettleBuyback`, `encodeStakeEmergencyDrainBuybackPool`. Add three new keys to the existing `STAKE_IX` enum at the next available tag numbers (currently 19+); the staged values 19 / 20 / 21 are placeholders the destination assigns. `WithdrawForBuyback` is intentionally NOT exported — it is a wrapper-internal CPI target the stake program constructs via `invoke_signed`; a public TS encoder would let a cranker submit it directly and bypass the gate sequence.
+2. Append two PDA derivations to `src/solana/stake.ts`: `deriveBuybackState(pool, programId)` and `deriveBuybackPool(pool, programId)`. Both pool-keyed (`[seed_string, pool.toBytes()]`), matching destination's existing `deriveStakeVaultAuth` and `deriveDepositPda` conventions. At transfer, make `programId` optional with default `getStakeProgramId()` to match destination's existing PDA-helper signatures.
+3. Add `src/events/buyback.ts` (or the destination's preferred event-parser path) with `decodeBuybackTriggered` and `decodeLiquidityLocked`. Field layouts are pinned in the stake-program entry above (step 7); the parsers consume the already-extracted event data section, no envelope.
+4. Add `src/abi/errors/buyback.ts` (or append to `src/abi/errors.ts`) with the `BUYBACK_BLOCKER` const enum, `parseBuybackBlockerName(code)`, and `buybackBlockerCode(name)`. Variant order MUST match the math crate's `BuybackBlocker` declaration order — the test in `buyback.test.ts` enforces this against `crates/buyback-staging/src/buyback.rs:88-114`.
+
+A reference implementation of all four steps is staged in this repo at [`packages/sdk-staging/`](packages/sdk-staging/). The `src/` subdirectory is the production code that lands in the destination; everything else (`package.json`, `tsconfig.json`, `pnpm-lock.yaml`, `README.md`, the vendored `src/abi/encode.ts`) is verification-only scaffolding marked with header comments — those files do NOT cross over. The vendored `encode.ts` mirrors the destination's existing helper module so the staged source files can typecheck against the same primitives the destination uses; at transfer time the integrator's imports resolve to destination's own `encode.ts` and the staging copy is discarded.
+
+Caller-side notes (handler concern, not file content):
+
+- **`programId` parameter shape.** Staged PDA helpers take `programId` as a required positional argument. Destination convention makes it optional with default `getStakeProgramId()` — match that pattern at transfer (single-line edit per helper).
+- **Event-emission envelope.** The staged decoders take the data section already stripped of any tag-byte prefix or program-data discriminator the destination's event-emission helper applies. Whatever wrapping the destination uses, the keeper/indexer caller unwraps before invoking the parser. If the destination doesn't yet have an event-emission helper, this entry's transfer waits for one.
+- **`STAKE_IX` numbering.** The placeholder tags 19 / 20 / 21 are not load-bearing. The destination assigns the next-available tags during merge; the encoder bodies need only the resolved discriminator value.
+
+Verification: `npx tsc --noEmit` (lint via the destination's `tsc --noEmit` script) and `npx vitest run` (40 tests across encoders, PDAs, error map, event parsers) pass in `packages/sdk-staging/`. Tests cover byte layout determinism, encoder boundaries (negative roundTripId, u64::MAX), PDA seed-string sentinels, event field-order regressions, and divide-by-zero saturation values for `ratioBps` (`u64::MAX`) and `realizedPercPerSol` (`u128::MAX`).
+
+Transfer record: not yet merged.
