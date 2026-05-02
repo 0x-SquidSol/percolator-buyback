@@ -11,9 +11,8 @@ describe("log", () => {
   it("forwards info to the underlying console", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
-      log.info("hello", { service: "buyback", outcome: "would-fire" });
+      log.info("hello", { outcome: "would-fire" });
       expect(spy).toHaveBeenCalledWith("hello", {
-        service: "buyback",
         outcome: "would-fire",
       });
     } finally {
@@ -24,9 +23,8 @@ describe("log", () => {
   it("forwards warn to the underlying console", () => {
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      log.warn("careful", { service: "buyback", outcome: "rpc-error" });
+      log.warn("careful", { outcome: "rpc-error" });
       expect(spy).toHaveBeenCalledWith("careful", {
-        service: "buyback",
         outcome: "rpc-error",
       });
     } finally {
@@ -37,8 +35,18 @@ describe("log", () => {
   it("forwards error to the underlying console", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      log.error("boom", { service: "buyback" });
-      expect(spy).toHaveBeenCalledWith("boom", { service: "buyback" });
+      log.error("boom", { slab: "ExamplePubkey" });
+      expect(spy).toHaveBeenCalledWith("boom", { slab: "ExamplePubkey" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("forwards a bare message with no fields", () => {
+    const spy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      log.info("starting");
+      expect(spy).toHaveBeenCalledWith("starting");
     } finally {
       spy.mockRestore();
     }
@@ -50,10 +58,10 @@ describe("BuybackLogFields type contract", () => {
     // Compile-time pin: each outcome string the service will emit must be
     // a member of the BuybackLogFields union. Adding a new outcome here
     // forces a corresponding spec update in src/lib/log.ts.
-    const wouldFire: BuybackLogFields = { service: "buyback", outcome: "would-fire" };
-    const blocked: BuybackLogFields = { service: "buyback", outcome: "blocked" };
-    const rpcError: BuybackLogFields = { service: "buyback", outcome: "rpc-error" };
-    const notLive: BuybackLogFields = { service: "buyback", outcome: "not-live" };
+    const wouldFire: BuybackLogFields = { outcome: "would-fire" };
+    const blocked: BuybackLogFields = { outcome: "blocked" };
+    const rpcError: BuybackLogFields = { outcome: "rpc-error" };
+    const notLive: BuybackLogFields = { outcome: "not-live" };
     expect([wouldFire, blocked, rpcError, notLive]).toHaveLength(4);
   });
 

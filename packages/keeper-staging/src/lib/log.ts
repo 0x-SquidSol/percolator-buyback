@@ -31,10 +31,16 @@
  * staged services. Keeping the schema explicit means the integrator's
  * `createLogger` swap can preserve field names verbatim and downstream
  * log consumers (Sentry, Loki, Discord webhooks) keep working.
+ *
+ * The service-namespace tag (`"buyback"`) is intentionally NOT a field
+ * here. The destination's `createLogger("buyback")` injects the
+ * namespace at construction time — duplicating it on every call site
+ * would force the integrator to strip it at transfer (or risk
+ * double-tagging / overwriting the constructor-bound value). Staged
+ * call sites pass only domain fields, byte-identical to destination
+ * call sites like `logger.info("msg", { slot })`.
  */
 export interface BuybackLogFields {
-  /** Always set. Identifies the staged service emitting the log. */
-  service: "buyback";
   /** Optional — Solana slab pubkey when the log refers to a specific market. */
   slab?: string;
   /** Optional — current Solana slot when the log was emitted. */
