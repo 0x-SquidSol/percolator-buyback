@@ -125,7 +125,7 @@ A reference implementation of all four steps is staged in this repo at [`package
 Caller-side notes (handler concern, not file content):
 
 - **`programId` parameter shape.** Staged PDA helpers take `programId` as a required positional argument. Destination convention makes it optional with default `getStakeProgramId()` — match that pattern at transfer (single-line edit per helper).
-- **Event-emission envelope.** The staged decoders take the data section already stripped of any tag-byte prefix or program-data discriminator the destination's event-emission helper applies. Whatever wrapping the destination uses, the keeper/indexer caller unwraps before invoking the parser. If the destination doesn't yet have an event-emission helper, this entry's transfer waits for one.
+- **Event-emission envelope.** The staged decoders take the data section already stripped of any tag-byte prefix or program-data discriminator the destination's event-emission helper applies. Whatever wrapping the destination uses, the keeper/indexer caller unwraps before invoking the parser.
 
 Verification: `npx tsc --noEmit` (lint via the destination's `tsc --noEmit` script) and `npx vitest run` (40 tests across encoders, PDAs, error map, event parsers) pass in `packages/sdk-staging/`. Tests cover byte layout determinism, encoder boundaries (negative roundTripId, u64::MAX), PDA seed-string sentinels, event field-order regressions, and divide-by-zero saturation values for `ratioBps` (`u64::MAX`) and `realizedPercPerSol` (`u128::MAX`).
 
