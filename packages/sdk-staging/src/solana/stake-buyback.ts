@@ -19,6 +19,13 @@
  *   not slab-keyed — matches `deriveStakeVaultAuth` and
  *   `deriveDepositPda`.
  *
+ * **Code-style conventions inherited from destination:**
+ * - `<Name>Args` interface + `encode<Name>(args)` function pairs
+ * - ESM imports with `.js` extensions on `.ts` source files
+ *   (`from "../abi/encode.js"` not `from "../abi/encode"`)
+ * - Throw `Error` with namespaced messages
+ *   (e.g. `"encU64: value out of range"`)
+ *
  * **Programmer-facing notes the integrator MUST honor at transfer:**
  * - The `STAKE_IX_BUYBACK` enum below is a placeholder. At transfer,
  *   merge its three keys (`TriggerBuyback`, `SettleBuyback`,
