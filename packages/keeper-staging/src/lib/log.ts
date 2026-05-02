@@ -15,6 +15,18 @@
  * `import { createLogger } from "@percolatorct/shared"` plus a
  * top-of-file `const log = createLogger("keeper:buyback");`.
  *
+ * **Post-transfer verification:** in destination's `src/services/`
+ * (the only place staged service files land), `grep -r '"../lib/log.js"'
+ * src/services/` MUST return zero hits. A surviving occurrence means
+ * a service file was copied without rewriting the import — the
+ * destination would silently degrade to `console`, bypassing
+ * `@percolatorct/shared`'s Sentry breadcrumbs and Discord critical
+ * alerts. tsc catches the dangling import only if `lib/log.js` is
+ * also dropped from destination (which it should be — the file is
+ * staging-only); the grep is a belt-and-suspenders check that
+ * matches the same post-replace-grep idiom INTEGRATION.md uses for
+ * the `STAKE_IX_BUYBACK` rewiring.
+ *
  * **Why not match the destination's createLogger shape locally?**
  * The destination's logger lives in `@percolatorct/shared` (a
  * separate repo). Vendoring it for staging would mean copying a
