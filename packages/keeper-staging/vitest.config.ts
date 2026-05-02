@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -12,7 +13,12 @@ export default defineConfig({
       // has @percolatorct/sdk as a real npm dep; here we route imports
       // to the local sdk-staging package whose source carries the
       // buyback additions not yet published upstream.
-      "@percolatorct/sdk": new URL("../sdk-staging/src/index.ts", import.meta.url).pathname,
+      //
+      // Use fileURLToPath rather than URL.pathname: on Windows the
+      // latter yields "/C:/..." which Vite cannot resolve.
+      "@percolatorct/sdk": fileURLToPath(
+        new URL("../sdk-staging/src/index.ts", import.meta.url),
+      ),
     },
   },
 });
