@@ -53,6 +53,6 @@ once on the SDK side (since fixed) and would drift again. Instead:
 
 Once the canonical entry is authored, it supersedes any per-file
 header that conflicts. Until then, the file headers are the binding
-specification — and today both staged files (`src/index.ts`,
-`src/lib/log.ts`) declare themselves staging-only, so a transfer
-right now produces no destination diff.
+specification — `src/index.ts` and `src/lib/log.ts` declare
+themselves staging-only; other files' transfer status follows from
+their own header.
