@@ -25,7 +25,9 @@
  * also dropped from destination (which it should be — the file is
  * staging-only); the grep is a belt-and-suspenders check that
  * matches the same post-replace-grep idiom INTEGRATION.md uses for
- * the `STAKE_IX_BUYBACK` rewiring.
+ * the `STAKE_IX_BUYBACK` rewiring. If `src/services/` contains no
+ * buyback service files yet, the grep passes vacuously — it is
+ * meaningful only once at least one service file is in place.
  *
  * **Why not match the destination's createLogger shape locally?**
  * The destination's logger lives in `@percolatorct/shared` (a
