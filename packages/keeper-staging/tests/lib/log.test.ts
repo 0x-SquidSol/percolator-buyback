@@ -103,10 +103,11 @@ describe("BuybackLogFields type contract", () => {
       log.info("nope", { signers: ["a", "b"] });
       // @ts-expect-error — Symbol value is rejected
       log.info("nope", { sym: Symbol("x") });
+      // @ts-expect-error — bigint rejected; call .toString() at the site (mirrors destination convention)
+      log.info("nope", { lamports: 5000n });
       // Primitives DO pass — these lines must NOT have ts-expect-error.
       log.info("ok", { txid: "5xKj..." });
       log.info("ok", { attempt: 3 });
-      log.info("ok", { lamports: 5000n });
       log.info("ok", { dryRun: true });
       log.info("ok", { lastSeen: null });
       expect(spy).toHaveBeenCalled();

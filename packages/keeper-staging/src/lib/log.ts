@@ -84,9 +84,12 @@ interface BuybackLogFields {
    * would silently leak secrets and full RPC payloads to the
    * destination's downstream consumers (Sentry, Loki, Discord
    * webhooks). Stringify objects at the call site if you really need
-   * to log them.
+   * to log them. Bigints are also rejected — call `.toString()` at the
+   * site, matching the destination keeper's convention (e.g.
+   * `lastPrice.toString()` in oracle service) and the `slab`/`slice`
+   * named-field shape above.
    */
-  [key: string]: string | number | bigint | boolean | null | undefined;
+  [key: string]: string | number | boolean | null | undefined;
 }
 
 /**
