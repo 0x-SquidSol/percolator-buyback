@@ -15,26 +15,37 @@
  *      Per the `lib/log.ts` post-transfer grep guard, no
  *      `"../lib/log.js"` reference may survive in the destination's
  *      `src/services/`.
- *   2. Drop the local `buildStakeTriggerBuybackIxStub` helper and call
- *      the real `buildStakeTriggerBuybackIx` from `@percolatorct/sdk`
- *      (which lands alongside this file's first dependency-bearing
- *      commit). The classification logic and call shape do not
- *      change; only the instruction encoder swaps in.
+ *   2. Drop the local `buildStakeTriggerBuybackIxStub` helper. The
+ *      data bytes already come from `encodeStakeTriggerBuyback()` in
+ *      `@percolatorct/sdk` and carry over as-is. Inline the real
+ *      account-list construction at the call site (using the stake
+ *      program ID and the SDK's `deriveBuybackState` /
+ *      `deriveBuybackPool` PDA helpers), or forward to a
+ *      destination-side helper if the keeper repo prefers that
+ *      shape. The classification logic, log shapes, and data bytes
+ *      do not change.
  *
- * **Why the simulated instruction is stubbed today:** the SDK
- * encoder (`buildStakeTriggerBuybackIx`) is staged separately and
- * lands in its own change; landing a half-implemented service file
- * just to wait for the encoder makes the diff harder to review. The
- * stub builds a no-op `SystemProgram.transfer(payer → payer, 0
- * lamports)` so the call to `simulateTransaction` is well-formed
- * end-to-end. Tests inject the simulate response directly via a
- * mock, so the four outcome paths (`would-fire`, `blocked`,
- * `rpc-error`, `not-live`) are exercised without depending on the
- * real instruction at all. When the encoder lands, the swap is
- * scoped: drop the local stub function, drop its `import` (if any
- * gets added), and replace the single call site with
- * `buildStakeTriggerBuybackIx(...)` from `@percolatorct/sdk`. The
- * classifier and log shapes do not move.
+ * **What's stubbed today, what isn't:** the data byte the probe
+ * sends to `simulateTransaction` is real — sourced from
+ * `encodeStakeTriggerBuyback()` in `@percolatorct/sdk`, so the
+ * on-wire discriminator matches what the destination's stake
+ * program will dispatch on. What remains a placeholder is the
+ * **account list** plus the **program ID**; the destination's
+ * `trigger_buyback` handler in `dcccrypto/percolator-stake` hasn't
+ * pinned its canonical accounts yet (`PROPOSAL.md` §11 explicitly
+ * defers "precise account layouts, error codes, and event field
+ * tables ... as each instruction lands in the implementing
+ * repos"). Tests mock the simulate response
+ * directly, so the four outcome paths (`would-fire`, `blocked`,
+ * `rpc-error`, `not-live`) are exercised regardless of the
+ * placeholder accounts. When the on-chain handler lands, the
+ * remaining swap is scoped: drop the local stub function, then
+ * either inline the real account-list construction at the call
+ * site (using the stake program ID + the existing PDA derivations
+ * `deriveBuybackState` / `deriveBuybackPool` from the SDK) or
+ * forward to a destination-side helper if the keeper repo prefers
+ * that shape. The classifier, log shapes, and data bytes do not
+ * move.
  */
 
 import {
@@ -46,7 +57,10 @@ import {
   VersionedTransaction,
   type SimulatedTransactionResponse,
 } from "@solana/web3.js";
-import { parseBuybackBlockerName } from "@percolatorct/sdk";
+import {
+  encodeStakeTriggerBuyback,
+  parseBuybackBlockerName,
+} from "@percolatorct/sdk";
 import { log } from "../lib/log.js";
 
 /**
@@ -78,21 +92,33 @@ export type EligibilityResult =
   | { outcome: "rpc-error"; error: string };
 
 /**
- * Stub for the real `buildStakeTriggerBuybackIx` from
- * `@percolatorct/sdk`. Replaced at the encoder's landing commit; see
- * the module header for the swap recipe. The stub returns a no-op
- * SystemProgram self-transfer of 0 lamports — a syntactically valid
- * instruction that lets the message compile and the simulate call go
- * through end-to-end. Test files mock the simulate response directly,
- * so the stub's content does not affect classification.
+ * Stub `trigger_buyback` instruction. The DATA bytes are real —
+ * sourced from `encodeStakeTriggerBuyback()` in `@percolatorct/sdk`,
+ * so the on-wire discriminator that hits the validator is the same
+ * byte the destination's stake program will dispatch on. The
+ * ACCOUNT LIST is still a placeholder until the destination's
+ * `trigger_buyback` handler in `dcccrypto/percolator-stake` defines
+ * its canonical accounts. Per `PROPOSAL.md` §6.2 the eventual list
+ * will read: insurance fund (writable, debit), buyback pool PDA
+ * (writable, credit), buyback state PDA (writable, stamp), the slab
+ * and its market accounts (readable for the gate check), `Clock`
+ * sysvar (readable), cranker (signer, fee payer). At that landing,
+ * the integrator drops this whole helper and replaces the call site
+ * with the real account-list construction; the data bytes (and the
+ * `encodeStakeTriggerBuyback` import) carry over unchanged.
+ *
+ * `programId` points at the System Program — also a placeholder. A
+ * real RPC against this stub would respond with a malformed-ix
+ * error; tests mock `simulateTransaction` directly so all four
+ * outcome paths land regardless of the on-chain dispatch.
  */
 function buildStakeTriggerBuybackIxStub(
   payer: PublicKey,
 ): TransactionInstruction {
-  return SystemProgram.transfer({
-    fromPubkey: payer,
-    toPubkey: payer,
-    lamports: 0,
+  return new TransactionInstruction({
+    programId: SystemProgram.programId,
+    keys: [{ pubkey: payer, isSigner: true, isWritable: true }],
+    data: Buffer.from(encodeStakeTriggerBuyback()),
   });
 }
 

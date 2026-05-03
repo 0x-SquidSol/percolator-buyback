@@ -15,6 +15,7 @@
 // specifier (resolved by tsconfig path alias + vitest resolve.alias to
 // this file) without any deep-import rewrites at transfer time.
 export * from "./solana/stake-buyback.js";
+export * from "./solana/constants.js";
 export * from "./events/buyback.js";
 export * from "./errors/buyback.js";
 export * from "./abi/encode.js";
