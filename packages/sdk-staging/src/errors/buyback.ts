@@ -36,18 +36,16 @@
  * the tail; existing variants never move.
  */
 export const BUYBACK_BLOCKER = {
-  /** Live market count exceeds `MAX_MARKETS_FOR_PER_SLAB`; binary upgrade required. */
-  MultiMarketRequiresGlobalAggregation: 0,
   /** Less than `BUYBACK_COOLDOWN_SECS` since the previous successful trigger. */
-  CooldownActive: 1,
+  CooldownActive: 0,
   /** Insurance fund balance is at or below the admin-set floor. */
-  BelowInsuranceFloor: 2,
+  BelowInsuranceFloor: 1,
   /** One or more markets are paying haircut on positive PnL. */
-  HaircutsActive: 3,
+  HaircutsActive: 2,
   /** `fund × DEN` < `exposure × NUM`; insurance under-collateralized for buyback. */
-  RatioBelowThreshold: 4,
+  RatioBelowThreshold: 3,
   /** A `checked_*` arithmetic op returned `None`; cross-cutting fail-closed bucket. */
-  MathOverflow: 5,
+  MathOverflow: 4,
 } as const;
 Object.freeze(BUYBACK_BLOCKER);
 
@@ -69,13 +67,13 @@ const NAME_BY_CODE: Readonly<Record<number, BuybackBlockerName>> = (() => {
 })();
 
 /**
- * Translate a `BuybackBlocker` discriminant code (0..=5 at this
+ * Translate a `BuybackBlocker` discriminant code (0..=4 at this
  * staging snapshot) to its variant name. Returns `null` for any code
  * outside the known range — caller decides whether to treat that as
  * an unrecognized future variant or a parser bug.
  *
  * @example
- *   parseBuybackBlockerName(1)  // "CooldownActive"
+ *   parseBuybackBlockerName(0)  // "CooldownActive"
  *   parseBuybackBlockerName(99) // null
  */
 export function parseBuybackBlockerName(

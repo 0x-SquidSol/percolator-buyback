@@ -60,10 +60,10 @@ describe("probeEligibility", () => {
 
   it("classifies an Anchor-named blocker log as blocked and logs at info", async () => {
     const conn = mockConnection({
-      err: { InstructionError: [0, { Custom: 6001 }] },
+      err: { InstructionError: [0, { Custom: 6000 }] },
       logs: [
         "Program log: Instruction: StakeTriggerBuyback",
-        "Program log: AnchorError occurred. Error Code: CooldownActive. Error Number: 6001.",
+        "Program log: AnchorError occurred. Error Code: CooldownActive. Error Number: 6000.",
       ],
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -83,12 +83,12 @@ describe("probeEligibility", () => {
   });
 
   it("classifies a numeric Custom-code blocker log as blocked", async () => {
-    // 0x1772 = 6002 → BuybackBlocker discriminant 2 → "BelowInsuranceFloor".
+    // 0x1771 = 6001 → BuybackBlocker discriminant 1 → "BelowInsuranceFloor".
     const conn = mockConnection({
-      err: { InstructionError: [0, { Custom: 6002 }] },
+      err: { InstructionError: [0, { Custom: 6001 }] },
       logs: [
         "Program log: Instruction: StakeTriggerBuyback",
-        "Program log: Custom error code: 0x1772",
+        "Program log: Custom error code: 0x1771",
       ],
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
