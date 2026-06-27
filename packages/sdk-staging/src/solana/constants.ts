@@ -1,12 +1,12 @@
 /**
  * @module solana/constants
  *
- * Hardcoded canonical pubkey constants the buyback flow reads — pool
- * address, USDC and wSOL mints, Token-2022 program ID. Off-chain
- * consumers (the keeper's eligibility probe, Jupiter swap leg, and
- * `settle_buyback` LP-mint check) all reach for these; centralizing
- * the values means a future address rotation is one edit, not a
- * grep-and-replace across services.
+ * Hardcoded canonical pubkey constants the buyback flow reads — the
+ * pool address and the USDC / wSOL mints. Off-chain consumers (the
+ * keeper's eligibility probe, Jupiter swap leg, and `settle_buyback`
+ * LP-mint check) all reach for these; centralizing the values means a
+ * future address rotation is one edit, not a grep-and-replace across
+ * services.
  *
  * **Transfer destination:** append the exported items in this file to
  * `dcccrypto/percolator-sdk/src/solana/stake.ts` (alongside the
@@ -26,14 +26,18 @@
  *   - `USDC_MINT`: Solana mainnet well-known USDC mint. The slice
  *     reserved by `trigger_buyback` is USDC-denominated; the keeper's
  *     first leg is USDC → wSOL via Jupiter (PROPOSAL §5.2).
- *   - `TOKEN_2022_PROGRAM_ID`: Solana mainnet well-known Token-2022
- *     program. PROPOSAL §11 fixes the canonical pool's LP mint as
- *     "vanilla Token-2022, 82 bytes, no extensions"; the keeper's LP
- *     burn leg invokes Token-2022's `Burn` ix (PROPOSAL §11
- *     "LP token burn mechanism").
  *
  * **Intentionally excluded — every gap below is reasoned, not
  * accidental:**
+ *   - `TOKEN_2022_PROGRAM_ID` is NOT redefined here. The destination
+ *     SDK already exports it canonically from
+ *     `src/solana/token-program.ts` and pins it through an explicit
+ *     named re-export in `src/solana/index.ts` to resolve a TS2308
+ *     ambiguity with `stake.ts`. A second definition would reintroduce
+ *     that ambiguity, so the keeper's LP-burn leg and `settle_buyback`
+ *     LP-mint check import the existing symbol. PROPOSAL §11 still
+ *     fixes the canonical pool's LP mint as "vanilla Token-2022, 82
+ *     bytes, no extensions".
  *   - `CANONICAL_LP_MINT` is pool-derived; the keeper reads it from
  *     the canonical pool account at runtime rather than from a
  *     hardcoded constant. Hardcoding would risk drift if PumpSwap
@@ -81,15 +85,4 @@ export const WSOL_MINT = new PublicKey(
  */
 export const USDC_MINT = new PublicKey(
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-);
-
-/**
- * Solana Token-2022 program. The canonical pool's LP mint is
- * "vanilla Token-2022, 82 bytes, no extensions" (PROPOSAL §11). The
- * keeper's LP-burn leg constructs a Token-2022 `Burn` ix targeting
- * the LP receipt; `settle_buyback` validates against this same
- * program ID when checking the LP mint owner.
- */
-export const TOKEN_2022_PROGRAM_ID = new PublicKey(
-  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
 );

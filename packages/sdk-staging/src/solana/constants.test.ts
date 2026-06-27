@@ -4,8 +4,8 @@
  * base58, (b) round-trips through `PublicKey` to its canonical
  * string, and (c) matches the source the constants module's header
  * cites (PROPOSAL §11 for the pool, Solana mainnet well-known
- * registry for the mint and program IDs). Mirrors the
- * `errors/buyback.test.ts` precedent.
+ * registry for the mints). Mirrors the `errors/buyback.test.ts`
+ * precedent.
  *
  * The point of pinning the strings here rather than just importing
  * the `PublicKey` instances: a typo introduced when someone edits
@@ -19,7 +19,6 @@ import {
   CANONICAL_POOL,
   WSOL_MINT,
   USDC_MINT,
-  TOKEN_2022_PROGRAM_ID,
 } from "./constants.js";
 
 describe("CANONICAL_POOL", () => {
@@ -46,14 +45,6 @@ describe("USDC_MINT", () => {
   });
 });
 
-describe("TOKEN_2022_PROGRAM_ID", () => {
-  it("matches the Solana mainnet Token-2022 program", () => {
-    expect(TOKEN_2022_PROGRAM_ID.toBase58()).toBe(
-      "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
-    );
-  });
-});
-
 describe("constants are distinct", () => {
   // Sanity check: a typo that copy-pasted one constant into another
   // slot would fail this check before string-equality asserts above
@@ -63,7 +54,6 @@ describe("constants are distinct", () => {
       CANONICAL_POOL.toBase58(),
       WSOL_MINT.toBase58(),
       USDC_MINT.toBase58(),
-      TOKEN_2022_PROGRAM_ID.toBase58(),
     ];
     expect(new Set(all).size).toBe(all.length);
   });
