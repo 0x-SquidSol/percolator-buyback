@@ -3,13 +3,12 @@
 //!
 //! The handler's call sequence is:
 //!
-//! 1. Verify the slab pubkey matches the canonical mainnet slab (handler
-//!    crate concern; not in this module).
-//! 2. [`assert_per_slab_invariant`] — confirms the per-slab math premise
-//!    (`live_market_count <= MAX_MARKETS_FOR_PER_SLAB`).
-//! 3. [`total_protocol_exposure`] — aggregates per-market exposure.
-//! 4. [`buyback_eligible`] — runs the four economic gates and returns the
-//!    slice on success.
+//! 1. Resolve and validate the target market's insurance fund and bound
+//!    buyback accounts (handler crate concern; not in this module).
+//! 2. [`total_protocol_exposure`] — computes the market's risk-weighted
+//!    exposure.
+//! 3. [`buyback_eligible`] — runs the economic gates and returns the slice
+//!    on success.
 //!
 //! All four buyback parameters are compile-time constants by design (see
 //! PROPOSAL.md §4 and §7.5). Changing any of them requires a program
@@ -61,37 +60,20 @@ const _: () = assert!(BUYBACK_RATIO_THRESHOLD_NUM > BUYBACK_RATIO_THRESHOLD_DEN)
 // `bps_denominator_lock` test.
 const _: () = assert!(BPS_DENOMINATOR > 0);
 
-/// Hard fail-closed assertion on the per-slab buyback implementation.
-///
-/// At launch the protocol has one live market, making per-slab semantically
-/// equivalent to global aggregation. Once a second market launches, the
-/// gate must migrate to a global formulation (or the shared-vault concept
-/// under PERC-628 ships, whichever first). Until then, this constant pins
-/// the assumption: the trigger handler compares the live market count
-/// against this value and fails closed if exceeded.
-pub const MAX_MARKETS_FOR_PER_SLAB: usize = 1;
-
 /// Reasons a buyback trigger may be blocked.
 ///
 /// Each variant maps to a distinct failure mode returned by
-/// [`assert_per_slab_invariant`], [`total_protocol_exposure`], or
-/// [`buyback_eligible`]. Keeping these as an enum (vs. string errors)
-/// lets callers distinguish steady-state cooldown from anomalous gate
-/// failures without parsing.
+/// [`total_protocol_exposure`] or [`buyback_eligible`]. Keeping these as an
+/// enum (vs. string errors) lets callers distinguish steady-state cooldown
+/// from anomalous gate failures without parsing.
 ///
-/// Variants are ordered to match the runtime evaluation sequence:
-/// the per-slab premise check fires first (in the sibling
-/// [`assert_per_slab_invariant`]), then the four economic gates run
-/// cheap-to-expensive inside [`buyback_eligible`]. `MathOverflow` sits
-/// last by convention because it is a cross-cutting fail-closed bucket
-/// that any `checked_*` site can fire from, not a sequenced gate.
+/// Variants are ordered to match the runtime evaluation sequence: the four
+/// economic gates run cheap-to-expensive inside [`buyback_eligible`].
+/// `MathOverflow` sits last by convention because it is a cross-cutting
+/// fail-closed bucket that any `checked_*` site can fire from, not a
+/// sequenced gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuybackBlocker {
-    /// Live market count exceeds [`MAX_MARKETS_FOR_PER_SLAB`]. The
-    /// per-slab implementation's premise no longer holds; a program
-    /// upgrade must migrate to global aggregation before buybacks can
-    /// resume.
-    MultiMarketRequiresGlobalAggregation,
     /// Less than [`BUYBACK_COOLDOWN_SECS`] since the previous successful
     /// trigger.
     CooldownActive,
@@ -187,10 +169,9 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
             .checked_mul(m.maintenance_bps as u128)
             .ok_or(BuybackBlocker::MathOverflow)?;
         let market_exposure = weighted / BPS_DENOMINATOR;
-        // Cross-market accumulator. Under maintenance_bps ≤ BPS_DENOMINATOR
-        // and MAX_MARKETS_FOR_PER_SLAB = 1, summing in-bounds market_exposures
-        // cannot overflow u128 — this checked_add is defense-in-depth against
-        // pathological input (also unreachable for a wrapping_add mutation).
+        // Cross-market accumulator. Each market_exposure is in-bounds under
+        // maintenance_bps ≤ BPS_DENOMINATOR; the checked_add keeps the running
+        // sum fail-closed against pathological input rather than wrapping.
         total = total
             .checked_add(market_exposure)
             .ok_or(BuybackBlocker::MathOverflow)?;
@@ -198,34 +179,12 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
     Ok(total)
 }
 
-/// Asserts the per-slab implementation's premise: at most one live market.
-///
-/// Per PROPOSAL.md §11 "Slab vs market aggregation — per-slab", the
-/// per-slab buyback math is mathematically equivalent to the global
-/// formulation only while the live market count does not exceed
-/// [`MAX_MARKETS_FOR_PER_SLAB`]. Once a second market launches, the gate
-/// must migrate to a global aggregation; this function fails closed in
-/// that scenario so the caller can route to the upgrade path.
-///
-/// Trust model: callers must derive `live_market_count` from an
-/// authoritative on-chain source (e.g., comparing the slab pubkey
-/// against a hardcoded `CANONICAL_SLAB` constant in the handler crate)
-/// rather than from a cranker-supplied value. The math crate cannot
-/// verify the count itself.
-pub fn assert_per_slab_invariant(live_market_count: usize) -> Result<(), BuybackBlocker> {
-    if live_market_count > MAX_MARKETS_FOR_PER_SLAB {
-        return Err(BuybackBlocker::MultiMarketRequiresGlobalAggregation);
-    }
-    Ok(())
-}
-
 /// Eligibility gate for a buyback trigger.
 ///
 /// Runs the four economic gates from PROPOSAL.md §2 in cheap-to-expensive
 /// order — cooldown, insurance floor, protocol stress, exposure ratio —
-/// then computes and returns the slice size. The per-slab N=1 invariant
-/// is checked separately by [`assert_per_slab_invariant`]; the handler
-/// must call that first.
+/// then computes and returns the slice size. Eligibility is evaluated per
+/// market against that market's own insurance fund and exposure.
 ///
 /// On success, the returned slice has two regimes:
 ///
@@ -353,13 +312,6 @@ mod tests {
         assert_eq!(BUYBACK_PER_EVENT_BPS, 10);
     }
 
-    #[test]
-    fn max_markets_invariant_at_launch() {
-        // PROPOSAL.md §11 "Slab vs market aggregation — per-slab":
-        // launch invariant is one live market.
-        assert_eq!(MAX_MARKETS_FOR_PER_SLAB, 1);
-    }
-
     fn sample_market(long: u128, short: u128, price: u128, bps: u64) -> MarketView {
         MarketView {
             oi_eff_long_q: long,
@@ -478,27 +430,6 @@ mod tests {
         assert_eq!(
             total_protocol_exposure(&[m_good, m_bad]),
             Err(BuybackBlocker::MathOverflow),
-        );
-    }
-
-    // ---------------- assert_per_slab_invariant ----------------
-
-    #[test]
-    fn per_slab_zero_markets_passes() {
-        // 0 ≤ MAX_MARKETS_FOR_PER_SLAB; degenerate but valid.
-        assert_eq!(assert_per_slab_invariant(0), Ok(()));
-    }
-
-    #[test]
-    fn per_slab_one_market_passes() {
-        assert_eq!(assert_per_slab_invariant(1), Ok(()));
-    }
-
-    #[test]
-    fn per_slab_two_markets_blocked() {
-        assert_eq!(
-            assert_per_slab_invariant(2),
-            Err(BuybackBlocker::MultiMarketRequiresGlobalAggregation),
         );
     }
 
