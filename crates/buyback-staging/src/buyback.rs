@@ -1,5 +1,5 @@
-//! Buyback parameters, gate-failure types, exposure aggregator, and the
-//! eligibility predicate.
+//! Buyback parameters, gate-failure types, the market-exposure helper, and
+//! the eligibility predicate.
 //!
 //! The handler's call sequence is:
 //!
@@ -100,7 +100,7 @@ pub enum BuybackBlocker {
     /// over-collateralized enough relative to current protocol exposure.
     RatioBelowThreshold,
     /// A `checked_*` arithmetic operation returned `None` — either while
-    /// aggregating per-market exposure or while running the cross-multiply
+    /// computing the market's exposure or while running the cross-multiply
     /// ratio comparison. Treated as a fail-closed condition; should be
     /// unreachable in practice but defends against pathological input.
     /// Conventionally placed last as a cross-cutting bucket; do not
