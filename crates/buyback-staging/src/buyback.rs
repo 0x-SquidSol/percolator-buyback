@@ -72,6 +72,13 @@ const _: () = assert!(BPS_DENOMINATOR > 0);
 /// `MathOverflow` sits last by convention because it is a cross-cutting
 /// fail-closed bucket that any `checked_*` site can fire from, not a
 /// sequenced gate.
+///
+/// The numeric discriminants are NOT frozen yet. They become append-only
+/// — never reorder, never remove — only once this enum lands on-chain and
+/// downstream services begin pinning the codes (the SDK mirror in
+/// `errors/buyback.ts` carries that contract). Until transfer the order is
+/// still being finalized here, so reordering — as in this staging tree —
+/// is expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuybackBlocker {
     /// Less than [`BUYBACK_COOLDOWN_SECS`] since the previous successful

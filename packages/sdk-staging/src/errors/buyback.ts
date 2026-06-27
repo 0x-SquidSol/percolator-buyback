@@ -10,11 +10,15 @@
  * `src/abi/errors/buyback.ts` and re-export from `src/abi/errors.ts`).
  *
  * **Source of truth:** the variant order MUST match the math crate's
- * `BuybackBlocker` enum in `dcccrypto/percolator/src/buyback.rs`. That
- * enum is locker-rule append-only — variants can be added at the tail
- * but never reordered or removed. If the destination ever appends a
- * variant, append it here at the same index so the discriminant
- * mapping stays correct.
+ * `BuybackBlocker` enum in `dcccrypto/percolator/src/buyback.rs`. The
+ * append-only locker rule — variants added only at the tail, never
+ * reordered or removed — takes effect once that enum lands on-chain and
+ * downstream services begin pinning the numeric codes. Until then, both
+ * this mirror and the staged enum are still being finalized and may be
+ * reordered together (as they were when `ExposureBelowMinimum` was
+ * inserted). After transfer, if the destination appends a variant,
+ * append it here at the same index so the discriminant mapping stays
+ * correct.
  *
  * **Why this is in the SDK and not keeper-private:** the
  * `BuybackBlocker` discriminant is the public failure-mode contract
@@ -31,9 +35,11 @@
  * declaration index. The index is the discriminant value the Rust
  * enum serializes to under `#[repr(u8)]` or via Borsh / numeric cast.
  *
- * **Order frozen against `crates/buyback-staging/src/buyback.rs`** —
- * variants are listed in declaration order. New variants append at
- * the tail; existing variants never move.
+ * **Order mirrors `crates/buyback-staging/src/buyback.rs`** — variants
+ * are listed in the staged enum's declaration order. Post-transfer (once
+ * on-chain) new variants append at the tail and existing variants never
+ * move; pre-transfer the order tracks the staged enum and may still
+ * change.
  */
 export const BUYBACK_BLOCKER = {
   /** Less than `BUYBACK_COOLDOWN_SECS` since the previous successful trigger. */
