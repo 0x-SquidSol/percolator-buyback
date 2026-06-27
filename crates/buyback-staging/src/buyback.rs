@@ -83,6 +83,12 @@ pub enum BuybackBlocker {
     /// One or more markets are currently paying haircut on positive PnL,
     /// indicating the protocol is in a stressed regime.
     HaircutsActive,
+    /// `total_exposure_q` is zero — there is no measurable risk for the
+    /// ratio gate to weigh the fund against, so "surplus relative to
+    /// exposure" is undefined and the buyback must not fire. A non-zero
+    /// magnitude floor, where desired, is enforced by the caller before
+    /// this predicate runs.
+    ExposureBelowMinimum,
     /// `fund × DEN` < `exposure × NUM`. The insurance fund is not
     /// over-collateralized enough relative to current protocol exposure.
     RatioBelowThreshold,
@@ -181,10 +187,11 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
 
 /// Eligibility gate for a buyback trigger.
 ///
-/// Runs the four economic gates from PROPOSAL.md §2 in cheap-to-expensive
-/// order — cooldown, insurance floor, protocol stress, exposure ratio —
-/// then computes and returns the slice size. Eligibility is evaluated per
-/// market against that market's own insurance fund and exposure.
+/// Runs the economic gates from PROPOSAL.md §2 in cheap-to-expensive order
+/// — cooldown, insurance floor, protocol stress, then the exposure ratio
+/// (guarded by a non-zero-exposure precondition) — and returns the slice
+/// size. Eligibility is evaluated per market against that market's own
+/// insurance fund and exposure.
 ///
 /// On success, the returned slice has two regimes:
 ///
@@ -251,8 +258,16 @@ pub fn buyback_eligible(
     // Gate 4: Ratio — cross-multiplied form of `fund / exposure >= 1.5`.
     // Equality passes (PROPOSAL.md §2.1: `>=`).
     //
-    // Note: the lhs `checked_mul` is defense-in-depth; with `fund_balance:
-    // u64` widened to u128 and multiplied by 10, the result cannot exceed
+    // Exposure precondition: a zero exposure makes the ratio degenerate —
+    // `fund × DEN >= 0 × NUM` holds for any fund — which would let the
+    // buyback fire on a market carrying no live risk. Require a non-zero
+    // exposure so the ratio gate is meaningful.
+    if total_exposure_q == 0 {
+        return Err(BuybackBlocker::ExposureBelowMinimum);
+    }
+
+    // The lhs `checked_mul` is defense-in-depth; with `fund_balance: u64`
+    // widened to u128 and multiplied by 10, the result cannot exceed
     // ~1.84e20, far below `u128::MAX`. The check is retained against any
     // future signature change. The rhs `checked_mul` IS reachable — a
     // pathologically large `total_exposure_q` near `u128::MAX` overflows
@@ -559,11 +574,34 @@ mod tests {
     }
 
     #[test]
-    fn predicate_zero_exposure_passes() {
-        // exposure = 0 → ratio is degenerate ("infinite"). lhs ≥ 0 → passes.
+    fn predicate_zero_exposure_blocked() {
+        // exposure = 0 → no measurable risk; the ratio gate would be
+        // degenerate, so the buyback must not fire.
         assert_eq!(
             buyback_eligible(1_000_000, 0, 0, 100_000, false, 100_000),
+            Err(BuybackBlocker::ExposureBelowMinimum),
+        );
+    }
+
+    #[test]
+    fn predicate_minimal_nonzero_exposure_passes() {
+        // exposure = 1 (minimal non-zero) clears the precondition; with a
+        // large fund the ratio gate still passes.
+        // proportional = 1_000_000 × 10 / 10_000 = 1_000.
+        assert_eq!(
+            buyback_eligible(1_000_000, 1, 0, 100_000, false, 100_000),
             Ok(1_000),
+        );
+    }
+
+    #[test]
+    fn predicate_gate_ordering_haircut_before_exposure() {
+        // The haircut gate fires before the exposure precondition: with
+        // exposure = 0 and haircut active, the returned variant must be
+        // HaircutsActive, not ExposureBelowMinimum.
+        assert_eq!(
+            buyback_eligible(1_000_000, 0, 0, 100_000, true, 100_000),
+            Err(BuybackBlocker::HaircutsActive),
         );
     }
 
