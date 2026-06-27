@@ -13,10 +13,13 @@ import {
   STAKE_IX_BUYBACK,
   deriveBuybackState,
   deriveBuybackPool,
+  deriveBuybackConfig,
   encodeStakeBindBuybackConfig,
   encodeStakeTriggerBuyback,
   encodeStakeSettleBuyback,
   encodeStakeEmergencyDrainBuybackPool,
+  decodeBuybackConfig,
+  BUYBACK_CONFIG_BYTE_LENGTH,
 } from "./stake-buyback.js";
 
 // Fixed pubkeys for reproducible PDA derivation tests. Programmatically
@@ -224,5 +227,89 @@ describe("deriveBuybackPool", () => {
     const actual = deriveBuybackPool(FIXED_POOL, FIXED_PROGRAM_ID);
     expect(actual[0].toBase58()).toBe(expected[0].toBase58());
     expect(actual[1]).toBe(expected[1]);
+  });
+});
+
+describe("deriveBuybackConfig", () => {
+  it("returns a [PublicKey, bump] pair", () => {
+    const [pda, bump] = deriveBuybackConfig(FIXED_POOL, FIXED_PROGRAM_ID);
+    expect(pda).toBeInstanceOf(PublicKey);
+    expect(typeof bump).toBe("number");
+    expect(bump).toBeGreaterThanOrEqual(0);
+    expect(bump).toBeLessThanOrEqual(255);
+  });
+
+  it("uses the literal seed string 'buyback_config'", () => {
+    const TEXT = new TextEncoder();
+    const expected = PublicKey.findProgramAddressSync(
+      [TEXT.encode("buyback_config"), FIXED_POOL.toBytes()],
+      FIXED_PROGRAM_ID,
+    );
+    const actual = deriveBuybackConfig(FIXED_POOL, FIXED_PROGRAM_ID);
+    expect(actual[0].toBase58()).toBe(expected[0].toBase58());
+    expect(actual[1]).toBe(expected[1]);
+  });
+
+  it("differs from the state and pool PDAs for the same pool", () => {
+    const cfg = deriveBuybackConfig(FIXED_POOL, FIXED_PROGRAM_ID)[0].toBase58();
+    const state = deriveBuybackState(FIXED_POOL, FIXED_PROGRAM_ID)[0].toBase58();
+    const pool = deriveBuybackPool(FIXED_POOL, FIXED_PROGRAM_ID)[0].toBase58();
+    expect(cfg).not.toBe(state);
+    expect(cfg).not.toBe(pool);
+  });
+});
+
+describe("decodeBuybackConfig", () => {
+  const TOKEN = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const POOL = new PublicKey("So11111111111111111111111111111111111111112");
+  const LP_MINT = new PublicKey("DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F");
+  const PAIR = new PublicKey("11111111111111111111111111111111");
+  const AMM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+  const SHA = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
+
+  // Build a config data section independently of the encoder.
+  function configData(): Uint8Array {
+    const out = new Uint8Array(BUYBACK_CONFIG_BYTE_LENGTH);
+    out.set(TOKEN.toBytes(), 0);
+    out.set(POOL.toBytes(), 32);
+    out.set(LP_MINT.toBytes(), 64);
+    out.set(PAIR.toBytes(), 96);
+    out.set(AMM.toBytes(), 128);
+    out.set(SHA, 160);
+    return out;
+  }
+
+  it("is 192 bytes (six 32-byte fields)", () => {
+    expect(BUYBACK_CONFIG_BYTE_LENGTH).toBe(192);
+  });
+
+  it("round-trips all six binding fields in declaration order", () => {
+    const cfg = decodeBuybackConfig(configData());
+    expect(cfg.tokenMint.toBase58()).toBe(TOKEN.toBase58());
+    expect(cfg.pool.toBase58()).toBe(POOL.toBase58());
+    expect(cfg.lpMint.toBase58()).toBe(LP_MINT.toBase58());
+    expect(cfg.pairMint.toBase58()).toBe(PAIR.toBase58());
+    expect(cfg.ammProgramId.toBase58()).toBe(AMM.toBase58());
+    expect(Array.from(cfg.ammProgramDataSha256)).toEqual(Array.from(SHA));
+  });
+
+  it("rejects data that is not exactly 192 bytes", () => {
+    expect(() => decodeBuybackConfig(new Uint8Array(191))).toThrow(/exactly 192 bytes/);
+    expect(() => decodeBuybackConfig(new Uint8Array(193))).toThrow(/exactly 192 bytes/);
+  });
+
+  it("decodes correctly from a non-zero-byteOffset view", () => {
+    const PREFIX = 7;
+    const payload = configData();
+    const backing = new Uint8Array(PREFIX + payload.length + PREFIX);
+    backing.fill(0xff);
+    backing.set(payload, PREFIX);
+    const view = backing.subarray(PREFIX, PREFIX + payload.length);
+    expect(view.byteOffset).toBe(PREFIX);
+
+    const cfg = decodeBuybackConfig(view);
+    expect(cfg.tokenMint.toBase58()).toBe(TOKEN.toBase58());
+    expect(cfg.ammProgramId.toBase58()).toBe(AMM.toBase58());
+    expect(Array.from(cfg.ammProgramDataSha256)).toEqual(Array.from(SHA));
   });
 });

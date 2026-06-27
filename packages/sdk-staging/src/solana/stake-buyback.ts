@@ -129,6 +129,28 @@ export function deriveBuybackPool(
   );
 }
 
+/**
+ * Derive the per-pool BuybackConfig PDA — the market's immutable buyback
+ * binding (token, pool, LP mint, pair, AMM program id + sha pin).
+ *
+ * Seeds: `["buyback_config", pool_pda]`. Pool-keyed, matching the
+ * destination's `deriveStakeVaultAuth` / `deriveDepositPda` conventions.
+ * Read the account with {@link decodeBuybackConfig}.
+ *
+ * @param pool       The stake pool PDA derived from the slab.
+ * @param programId  The percolator-stake program ID.
+ * @returns `[pda, bump]`
+ */
+export function deriveBuybackConfig(
+  pool: PublicKey,
+  programId: PublicKey,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [TEXT.encode("buyback_config"), pool.toBytes()],
+    programId,
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Instruction encoders
 // ═══════════════════════════════════════════════════════════════
@@ -230,4 +252,61 @@ export function encodeStakeEmergencyDrainBuybackPool(
   _args: EmergencyDrainBuybackPoolArgs = {},
 ): Uint8Array {
   return encU8(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Account decoders
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Decoded `BuybackConfig` account — a market's immutable buyback binding,
+ * written once by `bind_buyback_config`. Field order matches
+ * INTEGRATION.md `## dcccrypto/percolator-stake` step 3.
+ */
+export interface BuybackConfig {
+  /** The market's buyback token mint. */
+  tokenMint: PublicKey;
+  /** The bound AMM pool that receives the locked liquidity. */
+  pool: PublicKey;
+  /** The bound pool's Token-2022 LP mint. */
+  lpMint: PublicKey;
+  /** The pair asset paired with the bought token. */
+  pairMint: PublicKey;
+  /** The bound AMM's program ID. */
+  ammProgramId: PublicKey;
+  /** SHA-256 of the bound AMM's program-data account, captured at bind time (32 bytes). */
+  ammProgramDataSha256: Uint8Array;
+}
+
+/**
+ * Wire size of the `BuybackConfig` data section — five pubkeys + one
+ * 32-byte hash. PROVISIONAL: the on-chain struct authored in the matching
+ * `percolator-stake` PR is the source of truth. If that struct prepends a
+ * bump or an account-type tag, the caller strips it (or the offsets are
+ * reconciled) at transfer; this decoder reads the documented binding
+ * fields only.
+ */
+export const BUYBACK_CONFIG_BYTE_LENGTH = 32 * 6;
+
+/**
+ * Decode a `BuybackConfig` account's data section (binding fields only,
+ * no account header — the caller pre-strips any leading bump or
+ * discriminator). Throws if the input is the wrong length. Byte-offset
+ * safe: `slice` reads logical indices, so a sub-array view of a larger
+ * account buffer decodes correctly.
+ */
+export function decodeBuybackConfig(data: Uint8Array): BuybackConfig {
+  if (data.length !== BUYBACK_CONFIG_BYTE_LENGTH) {
+    throw new Error(
+      `decodeBuybackConfig: data length must be exactly ${BUYBACK_CONFIG_BYTE_LENGTH} bytes, got ${data.length}`,
+    );
+  }
+  return {
+    tokenMint: new PublicKey(data.slice(0, 32)),
+    pool: new PublicKey(data.slice(32, 64)),
+    lpMint: new PublicKey(data.slice(64, 96)),
+    pairMint: new PublicKey(data.slice(96, 128)),
+    ammProgramId: new PublicKey(data.slice(128, 160)),
+    ammProgramDataSha256: data.slice(160, 192),
+  };
 }
