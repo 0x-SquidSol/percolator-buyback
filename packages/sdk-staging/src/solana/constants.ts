@@ -37,9 +37,8 @@
  *     named re-export in `src/solana/index.ts` to resolve a TS2308
  *     ambiguity with `stake.ts`. A second definition would reintroduce
  *     that ambiguity, so the keeper's LP-burn leg and `settle_buyback`
- *     LP-mint check import the existing symbol. PROPOSAL §11 still
- *     fixes the canonical pool's LP mint as "vanilla Token-2022, 82
- *     bytes, no extensions".
+ *     LP-mint check import the existing symbol. PROPOSAL §11 fixes each
+ *     bound pool's LP mint as Token-2022 with no unexpected extensions.
  *   - The LP mint is pool-derived; the keeper reads it from the
  *     market's bound pool account at runtime rather than from a
  *     hardcoded constant. Hardcoding would risk drift if the AMM
