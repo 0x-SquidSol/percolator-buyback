@@ -99,12 +99,14 @@ function assertExactLength(
 export interface BuybackTriggered {
   /** Solana Clock unix_timestamp at trigger landing. */
   timestamp: bigint;
-  /** Slab insurance fund balance pre-withdrawal (collateral base units). */
+  /** The market's bound buyback token mint. */
+  tokenMint: PublicKey;
+  /** Market insurance fund balance pre-withdrawal (collateral base units). */
   fundBalanceBefore: bigint;
   /** Amount withdrawn into the buyback pool (collateral base units). */
   slice: bigint;
-  /** Q-format exposure used in the ratio gate. */
-  totalProtocolExposure: bigint;
+  /** Q-format exposure used in the ratio gate (this market's exposure). */
+  marketExposure: bigint;
   /**
    * `fund × 10_000 / exposure` in basis points; `u64::MAX`
    * (`18446744073709551615n`) when exposure was 0. Use
@@ -118,7 +120,7 @@ export interface BuybackTriggered {
 }
 
 /** Wire size of `BuybackTriggered`'s data section (no envelope). */
-export const BUYBACK_TRIGGERED_BYTE_LENGTH = 8 + 8 + 8 + 16 + 8 + 32;
+export const BUYBACK_TRIGGERED_BYTE_LENGTH = 8 + 32 + 8 + 8 + 16 + 8 + 32;
 
 /**
  * Decode a `BuybackTriggered` event from its already-extracted data
@@ -129,16 +131,18 @@ export function decodeBuybackTriggered(data: Uint8Array): BuybackTriggered {
   assertExactLength(data, BUYBACK_TRIGGERED_BYTE_LENGTH, "BuybackTriggered");
   const c = new Cursor(data);
   const timestamp = c.readI64();
+  const tokenMint = c.readPubkey();
   const fundBalanceBefore = c.readU64();
   const slice = c.readU64();
-  const totalProtocolExposure = c.readU128();
+  const marketExposure = c.readU128();
   const ratioBps = c.readU64();
   const buybackPool = c.readPubkey();
   return {
     timestamp,
+    tokenMint,
     fundBalanceBefore,
     slice,
-    totalProtocolExposure,
+    marketExposure,
     ratioBps,
     buybackPool,
   };
@@ -154,30 +158,32 @@ export function decodeBuybackTriggered(data: Uint8Array): BuybackTriggered {
  * sums `lpTokensBurned` across the feed.
  */
 export interface LiquidityLocked {
+  /** The market's bound buyback token mint. */
+  tokenMint: PublicKey;
   /** Original slice in collateral base units. */
-  sliceUsdc: bigint;
-  /** SOL bought via Jupiter (lamports). */
-  solAcquired: bigint;
-  /** $PERCOLATOR purchased on PumpSwap (base units). */
-  percBought: bigint;
-  /** SOL paired with $PERCOLATOR for add-LP (lamports). */
-  solPaired: bigint;
+  slice: bigint;
+  /** Pair-asset base units from the convert leg (the slice itself when no conversion). */
+  pairAcquired: bigint;
+  /** Buyback token purchased on the bound pool (base units). */
+  tokenBought: bigint;
+  /** Pair-asset base units paired with the bought token for add-LP. */
+  pairPaired: bigint;
   /** Token-2022 LP tokens destroyed. */
   lpTokensBurned: bigint;
-  /** Canonical PumpSwap pool — always equals `CANONICAL_POOL` post-validation. */
+  /** The market's bound pool — equals `BuybackConfig.pool` post-validation. */
   poolPubkey: PublicKey;
   /**
-   * `perc_bought × 10^12 / sol_paired` (Q12 ratio); `u128::MAX`
-   * (`340282366920938463463374607431768211455n`) when sol_paired was 0.
-   * Use {@link isRealizedPercPerSolSentinel} to test for the
+   * `token_bought × 10^12 / pair_paired` (Q12 ratio); `u128::MAX`
+   * (`340282366920938463463374607431768211455n`) when pair_paired was 0.
+   * Use {@link isRealizedTokenPerPairSentinel} to test for the
    * sentinel — naive arithmetic on the raw value will silently
    * dominate any aggregate.
    */
-  realizedPercPerSol: bigint;
+  realizedTokenPerPair: bigint;
 }
 
 /** Wire size of `LiquidityLocked`'s data section (no envelope). */
-export const LIQUIDITY_LOCKED_BYTE_LENGTH = 8 + 8 + 8 + 8 + 8 + 32 + 16;
+export const LIQUIDITY_LOCKED_BYTE_LENGTH = 32 + 8 + 8 + 8 + 8 + 8 + 32 + 16;
 
 /**
  * Decode a `LiquidityLocked` event from its already-extracted data
@@ -186,21 +192,23 @@ export const LIQUIDITY_LOCKED_BYTE_LENGTH = 8 + 8 + 8 + 8 + 8 + 32 + 16;
 export function decodeLiquidityLocked(data: Uint8Array): LiquidityLocked {
   assertExactLength(data, LIQUIDITY_LOCKED_BYTE_LENGTH, "LiquidityLocked");
   const c = new Cursor(data);
-  const sliceUsdc = c.readU64();
-  const solAcquired = c.readU64();
-  const percBought = c.readU64();
-  const solPaired = c.readU64();
+  const tokenMint = c.readPubkey();
+  const slice = c.readU64();
+  const pairAcquired = c.readU64();
+  const tokenBought = c.readU64();
+  const pairPaired = c.readU64();
   const lpTokensBurned = c.readU64();
   const poolPubkey = c.readPubkey();
-  const realizedPercPerSol = c.readU128();
+  const realizedTokenPerPair = c.readU128();
   return {
-    sliceUsdc,
-    solAcquired,
-    percBought,
-    solPaired,
+    tokenMint,
+    slice,
+    pairAcquired,
+    tokenBought,
+    pairPaired,
     lpTokensBurned,
     poolPubkey,
-    realizedPercPerSol,
+    realizedTokenPerPair,
   };
 }
 
@@ -219,8 +227,8 @@ export function decodeLiquidityLocked(data: Uint8Array): LiquidityLocked {
 /** Sentinel value emitted in `BuybackTriggered.ratioBps` when exposure was 0. */
 export const RATIO_BPS_SENTINEL: bigint = 0xffff_ffff_ffff_ffffn;
 
-/** Sentinel value emitted in `LiquidityLocked.realizedPercPerSol` when sol_paired was 0. */
-export const REALIZED_PERC_PER_SOL_SENTINEL: bigint = (1n << 128n) - 1n;
+/** Sentinel value emitted in `LiquidityLocked.realizedTokenPerPair` when pair_paired was 0. */
+export const REALIZED_TOKEN_PER_PAIR_SENTINEL: bigint = (1n << 128n) - 1n;
 
 /**
  * True when `ratioBps` carries the divide-by-zero sentinel
@@ -232,10 +240,10 @@ export function isRatioBpsSentinel(ratioBps: bigint): boolean {
 }
 
 /**
- * True when `realizedPercPerSol` carries the divide-by-zero sentinel
- * ({@link REALIZED_PERC_PER_SOL_SENTINEL}, i.e. on-chain `sol_paired`
+ * True when `realizedTokenPerPair` carries the divide-by-zero sentinel
+ * ({@link REALIZED_TOKEN_PER_PAIR_SENTINEL}, i.e. on-chain `pair_paired`
  * was 0). Returns false for any real value.
  */
-export function isRealizedPercPerSolSentinel(realizedPercPerSol: bigint): boolean {
-  return realizedPercPerSol === REALIZED_PERC_PER_SOL_SENTINEL;
+export function isRealizedTokenPerPairSentinel(realizedTokenPerPair: bigint): boolean {
+  return realizedTokenPerPair === REALIZED_TOKEN_PER_PAIR_SENTINEL;
 }

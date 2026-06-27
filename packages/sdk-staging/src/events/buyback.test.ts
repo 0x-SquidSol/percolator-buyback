@@ -15,9 +15,9 @@ import {
   decodeBuybackTriggered,
   decodeLiquidityLocked,
   RATIO_BPS_SENTINEL,
-  REALIZED_PERC_PER_SOL_SENTINEL,
+  REALIZED_TOKEN_PER_PAIR_SENTINEL,
   isRatioBpsSentinel,
-  isRealizedPercPerSolSentinel,
+  isRealizedTokenPerPairSentinel,
 } from "./buyback.js";
 
 // ═══════════════════════════════════════════════════════════════
@@ -61,11 +61,17 @@ function concat(...arrays: Uint8Array[]): Uint8Array {
   return out;
 }
 
+// Three distinct valid pubkeys. Per-market events now carry a `tokenMint`
+// AND a pool key, so the field-order regression needs them to differ to
+// catch a tokenMint/pool swap.
 const FIXED_PUBKEY = new PublicKey(
   "DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F",
 );
 const ANOTHER_PUBKEY = new PublicKey(
   "11111111111111111111111111111111",
+);
+const TOKEN_PUBKEY = new PublicKey(
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 );
 
 // ═══════════════════════════════════════════════════════════════
@@ -73,8 +79,8 @@ const ANOTHER_PUBKEY = new PublicKey(
 // ═══════════════════════════════════════════════════════════════
 
 describe("BUYBACK_TRIGGERED_BYTE_LENGTH", () => {
-  it("is 80 bytes (i64 + u64×3 + u128 + Pubkey)", () => {
-    expect(BUYBACK_TRIGGERED_BYTE_LENGTH).toBe(80);
+  it("is 112 bytes (i64 + Pubkey + u64×2 + u128 + u64 + Pubkey)", () => {
+    expect(BUYBACK_TRIGGERED_BYTE_LENGTH).toBe(112);
   });
 });
 
@@ -82,18 +88,20 @@ describe("decodeBuybackTriggered", () => {
   it("decodes a fully-populated event byte-for-byte", () => {
     const data = concat(
       i64LE(1_700_000_000n),                  // timestamp
+      pubkeyBytes(TOKEN_PUBKEY),              // tokenMint
       u64LE(1_000_000_000n),                  // fundBalanceBefore
       u64LE(1_000_000n),                      // slice (0.1% of fund)
-      u128LE(500_000_000n),                   // totalProtocolExposure
+      u128LE(500_000_000n),                   // marketExposure
       u64LE(20_000n),                         // ratioBps (2.0×)
       pubkeyBytes(FIXED_PUBKEY),              // buybackPool
     );
 
     const evt = decodeBuybackTriggered(data);
     expect(evt.timestamp).toBe(1_700_000_000n);
+    expect(evt.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58());
     expect(evt.fundBalanceBefore).toBe(1_000_000_000n);
     expect(evt.slice).toBe(1_000_000n);
-    expect(evt.totalProtocolExposure).toBe(500_000_000n);
+    expect(evt.marketExposure).toBe(500_000_000n);
     expect(evt.ratioBps).toBe(20_000n);
     expect(evt.buybackPool.toBase58()).toBe(FIXED_PUBKEY.toBase58());
   });
@@ -101,6 +109,7 @@ describe("decodeBuybackTriggered", () => {
   it("decodes negative timestamp (defensive — Solana clock is non-negative but type allows)", () => {
     const data = concat(
       i64LE(-1n),
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(0n),
       u64LE(0n),
       u128LE(0n),
@@ -113,13 +122,14 @@ describe("decodeBuybackTriggered", () => {
   it("decodes u128 exposure at the high end", () => {
     const data = concat(
       i64LE(0n),
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(0n),
       u64LE(0n),
       u128LE((1n << 128n) - 1n),
       u64LE(0n),
       pubkeyBytes(FIXED_PUBKEY),
     );
-    expect(decodeBuybackTriggered(data).totalProtocolExposure).toBe(
+    expect(decodeBuybackTriggered(data).marketExposure).toBe(
       (1n << 128n) - 1n,
     );
   });
@@ -127,6 +137,7 @@ describe("decodeBuybackTriggered", () => {
   it("decodes ratioBps at u64::MAX (the divide-by-zero saturation value)", () => {
     const data = concat(
       i64LE(0n),
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(0n),
       u64LE(0n),
       u128LE(0n),
@@ -140,17 +151,17 @@ describe("decodeBuybackTriggered", () => {
 
   it("rejects data shorter than the wire size", () => {
     const data = new Uint8Array(BUYBACK_TRIGGERED_BYTE_LENGTH - 1);
-    expect(() => decodeBuybackTriggered(data)).toThrow(/exactly 80 bytes/);
+    expect(() => decodeBuybackTriggered(data)).toThrow(/exactly 112 bytes/);
   });
 
   it("rejects data longer than the wire size", () => {
     const data = new Uint8Array(BUYBACK_TRIGGERED_BYTE_LENGTH + 1);
-    expect(() => decodeBuybackTriggered(data)).toThrow(/exactly 80 bytes/);
+    expect(() => decodeBuybackTriggered(data)).toThrow(/exactly 112 bytes/);
   });
 
   it("rejects empty data", () => {
     expect(() => decodeBuybackTriggered(new Uint8Array(0))).toThrow(
-      /exactly 80 bytes/,
+      /exactly 112 bytes/,
     );
   });
 });
@@ -160,35 +171,38 @@ describe("decodeBuybackTriggered", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("LIQUIDITY_LOCKED_BYTE_LENGTH", () => {
-  it("is 88 bytes (u64×5 + Pubkey + u128)", () => {
-    expect(LIQUIDITY_LOCKED_BYTE_LENGTH).toBe(88);
+  it("is 120 bytes (Pubkey + u64×5 + Pubkey + u128)", () => {
+    expect(LIQUIDITY_LOCKED_BYTE_LENGTH).toBe(120);
   });
 });
 
 describe("decodeLiquidityLocked", () => {
   it("decodes a fully-populated event byte-for-byte", () => {
     const data = concat(
-      u64LE(1_000_000n),                      // sliceUsdc
-      u64LE(50_000_000_000n),                 // solAcquired (50 SOL in lamports)
-      u64LE(1_500_000_000_000n),              // percBought
-      u64LE(25_000_000_000n),                 // solPaired
-      u64LE(193_649_167_310n),                // lpTokensBurned (sqrt of perc × sol)
+      pubkeyBytes(TOKEN_PUBKEY),              // tokenMint
+      u64LE(1_000_000n),                      // slice
+      u64LE(50_000_000_000n),                 // pairAcquired (50 wSOL in lamports)
+      u64LE(1_500_000_000_000n),              // tokenBought
+      u64LE(25_000_000_000n),                 // pairPaired
+      u64LE(193_649_167_310n),                // lpTokensBurned (sqrt of token × pair)
       pubkeyBytes(ANOTHER_PUBKEY),            // poolPubkey
-      u128LE(60_000_000_000_000_000n),        // realizedPercPerSol (60 perc/sol × 1e12)
+      u128LE(60_000_000_000_000_000n),        // realizedTokenPerPair (60 token/pair × 1e12)
     );
 
     const evt = decodeLiquidityLocked(data);
-    expect(evt.sliceUsdc).toBe(1_000_000n);
-    expect(evt.solAcquired).toBe(50_000_000_000n);
-    expect(evt.percBought).toBe(1_500_000_000_000n);
-    expect(evt.solPaired).toBe(25_000_000_000n);
+    expect(evt.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58());
+    expect(evt.slice).toBe(1_000_000n);
+    expect(evt.pairAcquired).toBe(50_000_000_000n);
+    expect(evt.tokenBought).toBe(1_500_000_000_000n);
+    expect(evt.pairPaired).toBe(25_000_000_000n);
     expect(evt.lpTokensBurned).toBe(193_649_167_310n);
     expect(evt.poolPubkey.toBase58()).toBe(ANOTHER_PUBKEY.toBase58());
-    expect(evt.realizedPercPerSol).toBe(60_000_000_000_000_000n);
+    expect(evt.realizedTokenPerPair).toBe(60_000_000_000_000_000n);
   });
 
-  it("decodes realizedPercPerSol at u128::MAX (the divide-by-zero saturation value)", () => {
+  it("decodes realizedTokenPerPair at u128::MAX (the divide-by-zero saturation value)", () => {
     const data = concat(
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(0n),
       u64LE(0n),
       u64LE(0n),
@@ -197,19 +211,19 @@ describe("decodeLiquidityLocked", () => {
       pubkeyBytes(FIXED_PUBKEY),
       u128LE((1n << 128n) - 1n),
     );
-    expect(decodeLiquidityLocked(data).realizedPercPerSol).toBe(
+    expect(decodeLiquidityLocked(data).realizedTokenPerPair).toBe(
       (1n << 128n) - 1n,
     );
   });
 
   it("rejects data shorter than the wire size", () => {
     const data = new Uint8Array(LIQUIDITY_LOCKED_BYTE_LENGTH - 1);
-    expect(() => decodeLiquidityLocked(data)).toThrow(/exactly 88 bytes/);
+    expect(() => decodeLiquidityLocked(data)).toThrow(/exactly 120 bytes/);
   });
 
   it("rejects data longer than the wire size", () => {
     const data = new Uint8Array(LIQUIDITY_LOCKED_BYTE_LENGTH + 1);
-    expect(() => decodeLiquidityLocked(data)).toThrow(/exactly 88 bytes/);
+    expect(() => decodeLiquidityLocked(data)).toThrow(/exactly 120 bytes/);
   });
 });
 
@@ -220,39 +234,46 @@ describe("decodeLiquidityLocked", () => {
 describe("field-order regression", () => {
   it("BuybackTriggered: changing field order shifts the decoded values", () => {
     // Sentinel: if a future edit accidentally swaps `slice` and `fundBalanceBefore`,
-    // this test fails because the spec'd values land in wrong slots.
+    // or `tokenMint` and `buybackPool`, this test fails because the spec'd values
+    // land in wrong slots.
     const data = concat(
       i64LE(0n),
+      pubkeyBytes(TOKEN_PUBKEY),       // tokenMint
       u64LE(111n),                     // fundBalanceBefore
       u64LE(222n),                     // slice
-      u128LE(333n),                    // totalProtocolExposure
+      u128LE(333n),                    // marketExposure
       u64LE(444n),                     // ratioBps
-      pubkeyBytes(FIXED_PUBKEY),
+      pubkeyBytes(FIXED_PUBKEY),       // buybackPool
     );
     const evt = decodeBuybackTriggered(data);
+    expect(evt.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58());
     expect(evt.fundBalanceBefore).toBe(111n);
     expect(evt.slice).toBe(222n);
-    expect(evt.totalProtocolExposure).toBe(333n);
+    expect(evt.marketExposure).toBe(333n);
     expect(evt.ratioBps).toBe(444n);
+    expect(evt.buybackPool.toBase58()).toBe(FIXED_PUBKEY.toBase58());
   });
 
   it("LiquidityLocked: changing field order shifts the decoded values", () => {
     const data = concat(
-      u64LE(11n),                      // sliceUsdc
-      u64LE(22n),                      // solAcquired
-      u64LE(33n),                      // percBought
-      u64LE(44n),                      // solPaired
+      pubkeyBytes(TOKEN_PUBKEY),       // tokenMint
+      u64LE(11n),                      // slice
+      u64LE(22n),                      // pairAcquired
+      u64LE(33n),                      // tokenBought
+      u64LE(44n),                      // pairPaired
       u64LE(55n),                      // lpTokensBurned
-      pubkeyBytes(FIXED_PUBKEY),
-      u128LE(66n),                     // realizedPercPerSol
+      pubkeyBytes(ANOTHER_PUBKEY),     // poolPubkey
+      u128LE(66n),                     // realizedTokenPerPair
     );
     const evt = decodeLiquidityLocked(data);
-    expect(evt.sliceUsdc).toBe(11n);
-    expect(evt.solAcquired).toBe(22n);
-    expect(evt.percBought).toBe(33n);
-    expect(evt.solPaired).toBe(44n);
+    expect(evt.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58());
+    expect(evt.slice).toBe(11n);
+    expect(evt.pairAcquired).toBe(22n);
+    expect(evt.tokenBought).toBe(33n);
+    expect(evt.pairPaired).toBe(44n);
     expect(evt.lpTokensBurned).toBe(55n);
-    expect(evt.realizedPercPerSol).toBe(66n);
+    expect(evt.poolPubkey.toBase58()).toBe(ANOTHER_PUBKEY.toBase58());
+    expect(evt.realizedTokenPerPair).toBe(66n);
   });
 });
 
@@ -274,6 +295,7 @@ describe("byteOffset regression", () => {
     const PREFIX = 7;
     const payload = concat(
       i64LE(1_700_000_000n),
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(1_000_000_000n),
       u64LE(1_000_000n),
       u128LE(500_000_000n),
@@ -288,12 +310,14 @@ describe("byteOffset regression", () => {
 
     const evt = decodeBuybackTriggered(view);
     expect(evt.timestamp).toBe(1_700_000_000n); // DataView path
+    expect(evt.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58()); // data.slice path
     expect(evt.buybackPool.toBase58()).toBe(FIXED_PUBKEY.toBase58()); // data.slice path
   });
 
   it("decodeLiquidityLocked: decodes correctly from a non-zero-byteOffset Uint8Array view", () => {
     const PREFIX = 11;
     const payload = concat(
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(1_000_000n),
       u64LE(50_000_000_000n),
       u64LE(1_500_000_000_000n),
@@ -309,8 +333,9 @@ describe("byteOffset regression", () => {
     expect(view.byteOffset).toBe(PREFIX);
 
     const evt = decodeLiquidityLocked(view);
+    expect(evt.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58()); // data.slice path
     expect(evt.poolPubkey.toBase58()).toBe(ANOTHER_PUBKEY.toBase58()); // data.slice path
-    expect(evt.sliceUsdc).toBe(1_000_000n); // DataView path
+    expect(evt.slice).toBe(1_000_000n); // DataView path
   });
 });
 
@@ -344,6 +369,7 @@ describe("RATIO_BPS_SENTINEL / isRatioBpsSentinel", () => {
   it("decodeBuybackTriggered round-trips the sentinel and isRatioBpsSentinel reports it", () => {
     const data = concat(
       i64LE(0n),
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(0n),
       u64LE(0n),
       u128LE(0n),
@@ -356,36 +382,37 @@ describe("RATIO_BPS_SENTINEL / isRatioBpsSentinel", () => {
   });
 });
 
-describe("REALIZED_PERC_PER_SOL_SENTINEL / isRealizedPercPerSolSentinel", () => {
+describe("REALIZED_TOKEN_PER_PAIR_SENTINEL / isRealizedTokenPerPairSentinel", () => {
   it("pins the sentinel value to u128::MAX", () => {
-    expect(REALIZED_PERC_PER_SOL_SENTINEL).toBe((1n << 128n) - 1n);
+    expect(REALIZED_TOKEN_PER_PAIR_SENTINEL).toBe((1n << 128n) - 1n);
   });
 
   it("returns true for the sentinel value", () => {
-    expect(isRealizedPercPerSolSentinel(REALIZED_PERC_PER_SOL_SENTINEL)).toBe(true);
+    expect(isRealizedTokenPerPairSentinel(REALIZED_TOKEN_PER_PAIR_SENTINEL)).toBe(true);
   });
 
   it("returns false for u128::MAX - 1", () => {
-    expect(isRealizedPercPerSolSentinel((1n << 128n) - 2n)).toBe(false);
+    expect(isRealizedTokenPerPairSentinel((1n << 128n) - 2n)).toBe(false);
   });
 
   it("returns false for typical Q12 ratios", () => {
-    expect(isRealizedPercPerSolSentinel(60_000_000_000_000_000n)).toBe(false);
-    expect(isRealizedPercPerSolSentinel(0n)).toBe(false);
+    expect(isRealizedTokenPerPairSentinel(60_000_000_000_000_000n)).toBe(false);
+    expect(isRealizedTokenPerPairSentinel(0n)).toBe(false);
   });
 
-  it("decodeLiquidityLocked round-trips the sentinel and isRealizedPercPerSolSentinel reports it", () => {
+  it("decodeLiquidityLocked round-trips the sentinel and isRealizedTokenPerPairSentinel reports it", () => {
     const data = concat(
+      pubkeyBytes(TOKEN_PUBKEY),
       u64LE(0n),
       u64LE(0n),
       u64LE(0n),
       u64LE(0n),
       u64LE(0n),
       pubkeyBytes(FIXED_PUBKEY),
-      u128LE(REALIZED_PERC_PER_SOL_SENTINEL),
+      u128LE(REALIZED_TOKEN_PER_PAIR_SENTINEL),
     );
     const evt = decodeLiquidityLocked(data);
-    expect(evt.realizedPercPerSol).toBe(REALIZED_PERC_PER_SOL_SENTINEL);
-    expect(isRealizedPercPerSolSentinel(evt.realizedPercPerSol)).toBe(true);
+    expect(evt.realizedTokenPerPair).toBe(REALIZED_TOKEN_PER_PAIR_SENTINEL);
+    expect(isRealizedTokenPerPairSentinel(evt.realizedTokenPerPair)).toBe(true);
   });
 });
