@@ -28,7 +28,7 @@ use core::result::Result;
 /// Numerator of the insurance-fund-to-exposure ratio threshold (1.5×).
 ///
 /// Paired with [`BUYBACK_RATIO_THRESHOLD_DEN`]. The eligibility gate
-/// compares `fund_balance × DEN` against `total_exposure × NUM` via
+/// compares `fund_balance × DEN` against `market_exposure × NUM` via
 /// integer cross-multiplication; no fixed-point representation needed.
 /// Equality passes (PROPOSAL.md §2.1: `≥`).
 pub const BUYBACK_RATIO_THRESHOLD_NUM: u128 = 15;
@@ -87,8 +87,8 @@ pub enum BuybackBlocker {
     /// Insurance fund balance is at or below the admin-set
     /// `insurance_floor`.
     BelowInsuranceFloor,
-    /// One or more markets are currently paying haircut on positive PnL,
-    /// indicating the protocol is in a stressed regime.
+    /// The target market is currently paying haircut on positive PnL,
+    /// indicating that market is in a stressed regime.
     HaircutsActive,
     /// `market_exposure_q` is zero — there is no measurable risk for the
     /// ratio gate to weigh the fund against, so "surplus relative to
@@ -97,7 +97,7 @@ pub enum BuybackBlocker {
     /// this predicate runs.
     ExposureBelowMinimum,
     /// `fund × DEN` < `exposure × NUM`. The insurance fund is not
-    /// over-collateralized enough relative to current protocol exposure.
+    /// over-collateralized enough relative to the market's current exposure.
     RatioBelowThreshold,
     /// A `checked_*` arithmetic operation returned `None` — either while
     /// computing the market's exposure or while running the cross-multiply
@@ -219,10 +219,11 @@ pub fn market_exposure(market: MarketView) -> Result<u128, BuybackBlocker> {
 ///
 /// Trust assumptions on parameters:
 ///
-/// - `haircut_active`: caller has aggregated this across all live
-///   markets. The math crate trusts the boolean as a global stress
-///   signal (per the prereq A resolution: stress is protocol-wide, not
-///   slab-local).
+/// - `haircut_active`: the target market's own haircut state. The math
+///   crate trusts the boolean as that market's stress signal; the handler
+///   passes the market's own haircut status, so a healthy market is not
+///   blocked by another market's stress (the gate is per-market, matching
+///   the per-market insurance fund and exposure).
 /// - `now`, `last_buyback_ts`: caller supplies via Solana `Clock`. No
 ///   defensive sign checks; Solana timestamps post-genesis are
 ///   non-negative by construction.

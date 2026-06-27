@@ -55,8 +55,8 @@ A buyback fires for a market only when **all** of these conditions are simultane
 
 ### 2.4 Stress gate — `haircut_ratio() == 1.0`
 
-- The protocol must currently be paying LPs 100% of what they're owed. If haircuts are active, the fund is by definition undersized for current losses and no buyback is appropriate.
-- This is the strongest gate: it short-circuits the entire pipeline the moment the protocol enters a stressed regime, even if ratio and cooldown would otherwise allow firing.
+- The market must currently be paying its LPs 100% of what they're owed. If that market's haircuts are active, its fund is by definition undersized for current losses and no buyback is appropriate. The gate is per-market: a healthy market is not blocked by another market's stress (matching the per-market fund and exposure).
+- This is the strongest gate: it short-circuits the entire pipeline the moment the market enters a stressed regime, even if ratio and cooldown would otherwise allow firing.
 - Equality is deliberate. `haircut_ratio() == 1.0` means "no haircut active right now," not "no haircut in the last N blocks." A stress that has just resolved still passes — the ratio gate handles the residual.
 - The gate reads from the same haircut accounting the protocol already uses to socialize losses; no new state.
 
