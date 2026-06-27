@@ -31,9 +31,9 @@ const FIXED_PROGRAM_ID = new PublicKey(
 
 describe("STAKE_IX_BUYBACK", () => {
   it("freezes the placeholder tag values", () => {
-    expect(STAKE_IX_BUYBACK.TriggerBuyback).toBe(19);
-    expect(STAKE_IX_BUYBACK.SettleBuyback).toBe(20);
-    expect(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool).toBe(21);
+    expect(STAKE_IX_BUYBACK.TriggerBuyback).toBe(24);
+    expect(STAKE_IX_BUYBACK.SettleBuyback).toBe(25);
+    expect(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool).toBe(26);
     expect(Object.isFrozen(STAKE_IX_BUYBACK)).toBe(true);
   });
 });

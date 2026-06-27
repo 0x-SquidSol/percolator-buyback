@@ -30,9 +30,13 @@
  * - The `STAKE_IX_BUYBACK` enum below is a placeholder. At transfer,
  *   merge its three keys (`TriggerBuyback`, `SettleBuyback`,
  *   `EmergencyDrainBuybackPool`) into the destination's existing
- *   `STAKE_IX` enum, assigning the next available tags. Current max in
- *   destination at the time of staging is tag 18 (`SetMarketResolved`).
- *   The staged values 19/20/21 are best-guess; the destination decides.
+ *   `STAKE_IX` enum, assigning the next available tags. The on-chain
+ *   `StakeInstruction` decoder (`percolator-stake/src/instruction.rs`)
+ *   occupies tags 0-10, 12-16, 18, and 19-23 — the latter being the
+ *   insurance-authority family (`BindInsuranceAuthority` through
+ *   `RecoverFlushedInsurance`); tags 11 and 17 are tombstoned. The
+ *   next free discriminator is 24, so the staged values are 24/25/26.
+ *   The destination reconfirms against its enum before merge.
  * - The `programId` parameter on derivation functions is required in
  *   this staging crate. Destination convention makes it optional with
  *   default `getStakeProgramId()` — match that pattern at transfer
@@ -55,15 +59,17 @@ import { encU8, encU64, concatBytes } from "../abi/encode.js";
 /**
  * Placeholder tag values for the three buyback instructions. At
  * transfer, merge these keys into the destination's existing
- * `STAKE_IX` enum at the next available tag numbers (currently 19+).
+ * `STAKE_IX` enum at the next available tag numbers. The on-chain
+ * decoder occupies up to tag 23 (`RecoverFlushedInsurance`), so the
+ * next free discriminators are 24/25/26.
  *
- * The values are decimal-suffixed in source so a future reviewer can
- * grep for the actual discriminator byte that lands on-chain.
+ * The values are plain decimal literals in source so a future reviewer
+ * can grep for the actual discriminator byte that lands on-chain.
  */
 export const STAKE_IX_BUYBACK = {
-  TriggerBuyback: 19,
-  SettleBuyback: 20,
-  EmergencyDrainBuybackPool: 21,
+  TriggerBuyback: 24,
+  SettleBuyback: 25,
+  EmergencyDrainBuybackPool: 26,
 } as const;
 Object.freeze(STAKE_IX_BUYBACK);
 
