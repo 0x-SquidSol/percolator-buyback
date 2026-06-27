@@ -187,7 +187,7 @@ pub fn market_exposure(market: MarketView) -> Result<u128, BuybackBlocker> {
 /// Eligibility gate for a buyback trigger.
 ///
 /// Runs the economic gates from PROPOSAL.md §2 in cheap-to-expensive order
-/// — cooldown, insurance floor, protocol stress, then the exposure ratio
+/// — cooldown, insurance floor, market stress, then the exposure ratio
 /// (guarded by a non-zero-exposure precondition) — and returns the slice
 /// size. Eligibility is evaluated per market against that market's own
 /// insurance fund and exposure.
@@ -251,7 +251,7 @@ pub fn buyback_eligible(
         return Err(BuybackBlocker::BelowInsuranceFloor);
     }
 
-    // Gate 3: Stress — no haircut active anywhere in the protocol.
+    // Gate 3: Stress — no haircut active on this market.
     if haircut_active {
         return Err(BuybackBlocker::HaircutsActive);
     }
