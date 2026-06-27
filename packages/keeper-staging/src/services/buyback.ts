@@ -134,6 +134,20 @@ function buildStakeTriggerBuybackIxStub(
  * Returns `null` when no recognizable variant is present. The caller
  * then treats the response as a non-blocker failure (rpc-error or
  * not-live) rather than misclassifying it as `blocked` with no name.
+ *
+ * **OPEN DEPENDENCY — the Anchor framing is provisional.** The
+ * destination `dcccrypto/percolator-stake` is a NATIVE program: its
+ * existing errors are `ProgramError::Custom(n)` with 0-based
+ * discriminants (no Anchor `0x1770` / 6000 offset) and its diagnostics
+ * are plain `msg!` strings, not `AnchorError` log lines. The buyback
+ * handler has not landed yet, so its on-chain error surface is undecided.
+ * Both branches below (the `Error Code:` name match and the `- 6000`
+ * numeric path) assume an Anchor-style surface and are pinned only by
+ * this staging suite's fixtures. When the handler defines its real error
+ * encoding, revisit this parser: if it follows the native `StakeError`
+ * convention, drop the `- 6000` offset and read the codes 0-based, and
+ * source the custom code from the transaction `err` field rather than the
+ * program logs.
  */
 function extractBlocker(logs: readonly string[]): string | null {
   for (const line of logs) {
