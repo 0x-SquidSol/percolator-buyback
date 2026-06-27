@@ -28,15 +28,18 @@
  *
  * **Programmer-facing notes the integrator MUST honor at transfer:**
  * - The `STAKE_IX_BUYBACK` enum below is a placeholder. At transfer,
- *   merge its three keys (`TriggerBuyback`, `SettleBuyback`,
- *   `EmergencyDrainBuybackPool`) into the destination's existing
- *   `STAKE_IX` enum, assigning the next available tags. The on-chain
- *   `StakeInstruction` decoder (`percolator-stake/src/instruction.rs`)
- *   occupies tags 0-10, 12-16, 18, and 19-23 — the latter being the
- *   insurance-authority family (`BindInsuranceAuthority` through
- *   `RecoverFlushedInsurance`); tags 11 and 17 are tombstoned. The
- *   next free discriminator is 24, so the staged values are 24/25/26.
- *   The destination reconfirms against its enum before merge.
+ *   merge its four keys (`BindBuybackConfig`, `TriggerBuyback`,
+ *   `SettleBuyback`, `EmergencyDrainBuybackPool`) into the destination's
+ *   existing `STAKE_IX` enum, assigning the next available tags. The
+ *   on-chain `StakeInstruction` decoder
+ *   (`percolator-stake/src/instruction.rs`) occupies tags 0-10, 12-16,
+ *   18, and 19-23 — the latter being the insurance-authority family
+ *   (`BindInsuranceAuthority` through `RecoverFlushedInsurance`); tags
+ *   11 and 17 are tombstoned. The next free discriminators are 24-27.
+ *   The block order here (Bind=24, Trigger=25, Settle=26, Drain=27) is
+ *   PROVISIONAL — the on-chain enum order authored in the matching
+ *   `percolator-stake` PR is the source of truth; the destination
+ *   reconfirms and may reorder before merge.
  * - The `programId` parameter on derivation functions is required in
  *   this staging crate. Destination convention makes it optional with
  *   default `getStakeProgramId()` — match that pattern at transfer
@@ -50,26 +53,29 @@
  */
 
 import { PublicKey } from "@solana/web3.js";
-import { encU8, encU64, concatBytes } from "../abi/encode.js";
+import { encU8, encU64, encPubkey, concatBytes } from "../abi/encode.js";
 
 // ═══════════════════════════════════════════════════════════════
 // Instruction tags — placeholder, merge into destination's STAKE_IX
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Placeholder tag values for the three buyback instructions. At
+ * Placeholder tag values for the four buyback instructions. At
  * transfer, merge these keys into the destination's existing
  * `STAKE_IX` enum at the next available tag numbers. The on-chain
  * decoder occupies up to tag 23 (`RecoverFlushedInsurance`), so the
- * next free discriminators are 24/25/26.
+ * next free discriminators are 24-27.
  *
- * The values are plain decimal literals in source so a future reviewer
- * can grep for the actual discriminator byte that lands on-chain.
+ * Order is PROVISIONAL (see the file header): the on-chain enum order is
+ * the source of truth and the destination may reorder before merge. The
+ * values are plain decimal literals in source so a future reviewer can
+ * grep for the actual discriminator byte that lands on-chain.
  */
 export const STAKE_IX_BUYBACK = {
-  TriggerBuyback: 24,
-  SettleBuyback: 25,
-  EmergencyDrainBuybackPool: 26,
+  BindBuybackConfig: 24,
+  TriggerBuyback: 25,
+  SettleBuyback: 26,
+  EmergencyDrainBuybackPool: 27,
 } as const;
 Object.freeze(STAKE_IX_BUYBACK);
 
@@ -126,6 +132,56 @@ export function deriveBuybackPool(
 // ═══════════════════════════════════════════════════════════════
 // Instruction encoders
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * `bind_buyback_config` writes a market's immutable buyback binding at
+ * launch (PROPOSAL.md §11 "Per-market buyback binding"; INTEGRATION.md
+ * `## dcccrypto/percolator-stake` step 3). Set once, never mutated.
+ *
+ * The handler rejects a binding where `tokenMint` equals the market's
+ * collateral mint or the `lpMint` (the anti-reflexivity guard), so a
+ * market never buys its own backing.
+ *
+ * Wire layout: `tag(1) + tokenMint(32) + pool(32) + lpMint(32) +
+ * pairMint(32) + ammProgramId(32) + ammProgramDataSha256(32) = 193 bytes`.
+ */
+export interface BindBuybackConfigArgs {
+  /** The market's buyback token mint (must differ from collateral and lpMint). */
+  tokenMint: PublicKey | string;
+  /** The bound AMM pool that receives the locked liquidity. */
+  pool: PublicKey | string;
+  /** The bound pool's Token-2022 LP mint. */
+  lpMint: PublicKey | string;
+  /** The pair asset paired with the bought token (e.g. wSOL, or USDC in-house). */
+  pairMint: PublicKey | string;
+  /** The bound AMM's program ID. */
+  ammProgramId: PublicKey | string;
+  /**
+   * SHA-256 of the bound AMM's program-data account, captured at bind
+   * time. Exactly 32 bytes — `settle_buyback` fail-closes if the AMM
+   * ships an upgraded binary whose hash no longer matches.
+   */
+  ammProgramDataSha256: Uint8Array;
+}
+
+export function encodeStakeBindBuybackConfig(
+  args: BindBuybackConfigArgs,
+): Uint8Array {
+  if (args.ammProgramDataSha256.length !== 32) {
+    throw new Error(
+      `encodeStakeBindBuybackConfig: ammProgramDataSha256 must be 32 bytes, got ${args.ammProgramDataSha256.length}`,
+    );
+  }
+  return concatBytes(
+    encU8(STAKE_IX_BUYBACK.BindBuybackConfig),
+    encPubkey(args.tokenMint),
+    encPubkey(args.pool),
+    encPubkey(args.lpMint),
+    encPubkey(args.pairMint),
+    encPubkey(args.ammProgramId),
+    args.ammProgramDataSha256,
+  );
+}
 
 /**
  * `trigger_buyback` takes no instruction-data payload — the handler

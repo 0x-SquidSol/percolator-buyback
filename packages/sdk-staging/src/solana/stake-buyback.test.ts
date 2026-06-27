@@ -13,6 +13,7 @@ import {
   STAKE_IX_BUYBACK,
   deriveBuybackState,
   deriveBuybackPool,
+  encodeStakeBindBuybackConfig,
   encodeStakeTriggerBuyback,
   encodeStakeSettleBuyback,
   encodeStakeEmergencyDrainBuybackPool,
@@ -31,10 +32,68 @@ const FIXED_PROGRAM_ID = new PublicKey(
 
 describe("STAKE_IX_BUYBACK", () => {
   it("freezes the placeholder tag values", () => {
-    expect(STAKE_IX_BUYBACK.TriggerBuyback).toBe(24);
-    expect(STAKE_IX_BUYBACK.SettleBuyback).toBe(25);
-    expect(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool).toBe(26);
+    expect(STAKE_IX_BUYBACK.BindBuybackConfig).toBe(24);
+    expect(STAKE_IX_BUYBACK.TriggerBuyback).toBe(25);
+    expect(STAKE_IX_BUYBACK.SettleBuyback).toBe(26);
+    expect(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool).toBe(27);
     expect(Object.isFrozen(STAKE_IX_BUYBACK)).toBe(true);
+  });
+});
+
+describe("encodeStakeBindBuybackConfig", () => {
+  const TOKEN = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const POOL = new PublicKey("So11111111111111111111111111111111111111112");
+  const LP_MINT = new PublicKey("DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F");
+  const PAIR = new PublicKey("11111111111111111111111111111111");
+  const AMM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+  const SHA = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
+
+  function bind(sha: Uint8Array = SHA): Uint8Array {
+    return encodeStakeBindBuybackConfig({
+      tokenMint: TOKEN,
+      pool: POOL,
+      lpMint: LP_MINT,
+      pairMint: PAIR,
+      ammProgramId: AMM,
+      ammProgramDataSha256: sha,
+    });
+  }
+
+  it("emits tag(1) + 5 pubkeys(32) + sha256(32) = 193 bytes", () => {
+    const bytes = bind();
+    expect(bytes.length).toBe(193);
+    expect(bytes[0]).toBe(STAKE_IX_BUYBACK.BindBuybackConfig);
+  });
+
+  it("lays the five pubkeys out in declaration order", () => {
+    const bytes = bind();
+    expect(Array.from(bytes.slice(1, 33))).toEqual(Array.from(TOKEN.toBytes()));
+    expect(Array.from(bytes.slice(33, 65))).toEqual(Array.from(POOL.toBytes()));
+    expect(Array.from(bytes.slice(65, 97))).toEqual(Array.from(LP_MINT.toBytes()));
+    expect(Array.from(bytes.slice(97, 129))).toEqual(Array.from(PAIR.toBytes()));
+    expect(Array.from(bytes.slice(129, 161))).toEqual(Array.from(AMM.toBytes()));
+  });
+
+  it("appends the 32-byte sha256 last", () => {
+    const bytes = bind();
+    expect(Array.from(bytes.slice(161, 193))).toEqual(Array.from(SHA));
+  });
+
+  it("accepts base58-string pubkeys identically to PublicKey instances", () => {
+    const fromStrings = encodeStakeBindBuybackConfig({
+      tokenMint: TOKEN.toBase58(),
+      pool: POOL.toBase58(),
+      lpMint: LP_MINT.toBase58(),
+      pairMint: PAIR.toBase58(),
+      ammProgramId: AMM.toBase58(),
+      ammProgramDataSha256: SHA,
+    });
+    expect(Array.from(fromStrings)).toEqual(Array.from(bind()));
+  });
+
+  it("rejects a sha256 that is not exactly 32 bytes", () => {
+    expect(() => bind(new Uint8Array(31))).toThrow(/must be 32 bytes/);
+    expect(() => bind(new Uint8Array(33))).toThrow(/must be 32 bytes/);
   });
 });
 
