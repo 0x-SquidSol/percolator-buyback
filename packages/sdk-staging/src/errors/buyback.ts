@@ -42,10 +42,12 @@ export const BUYBACK_BLOCKER = {
   BelowInsuranceFloor: 1,
   /** One or more markets are paying haircut on positive PnL. */
   HaircutsActive: 2,
+  /** `total_exposure_q` is zero; no measurable risk for the ratio gate to weigh. */
+  ExposureBelowMinimum: 3,
   /** `fund × DEN` < `exposure × NUM`; insurance under-collateralized for buyback. */
-  RatioBelowThreshold: 3,
+  RatioBelowThreshold: 4,
   /** A `checked_*` arithmetic op returned `None`; cross-cutting fail-closed bucket. */
-  MathOverflow: 4,
+  MathOverflow: 5,
 } as const;
 Object.freeze(BUYBACK_BLOCKER);
 
@@ -67,7 +69,7 @@ const NAME_BY_CODE: Readonly<Record<number, BuybackBlockerName>> = (() => {
 })();
 
 /**
- * Translate a `BuybackBlocker` discriminant code (0..=4 at this
+ * Translate a `BuybackBlocker` discriminant code (0..=5 at this
  * staging snapshot) to its variant name. Returns `null` for any code
  * outside the known range — caller decides whether to treat that as
  * an unrecognized future variant or a parser bug.

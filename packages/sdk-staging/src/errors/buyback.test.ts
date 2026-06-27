@@ -15,7 +15,7 @@ import {
 } from "./buyback.js";
 
 describe("BUYBACK_BLOCKER", () => {
-  it("exposes the five current variants in declaration order", () => {
+  it("exposes the six current variants in declaration order", () => {
     // Order MUST match the BuybackBlocker enum in
     // crates/buyback-staging/src/buyback.rs. A diff here means the Rust
     // enum was reordered or extended without a corresponding TS update —
@@ -24,8 +24,9 @@ describe("BUYBACK_BLOCKER", () => {
       ["CooldownActive", 0],
       ["BelowInsuranceFloor", 1],
       ["HaircutsActive", 2],
-      ["RatioBelowThreshold", 3],
-      ["MathOverflow", 4],
+      ["ExposureBelowMinimum", 3],
+      ["RatioBelowThreshold", 4],
+      ["MathOverflow", 5],
     ]);
   });
 
@@ -39,12 +40,13 @@ describe("parseBuybackBlockerName", () => {
     expect(parseBuybackBlockerName(0)).toBe("CooldownActive");
     expect(parseBuybackBlockerName(1)).toBe("BelowInsuranceFloor");
     expect(parseBuybackBlockerName(2)).toBe("HaircutsActive");
-    expect(parseBuybackBlockerName(3)).toBe("RatioBelowThreshold");
-    expect(parseBuybackBlockerName(4)).toBe("MathOverflow");
+    expect(parseBuybackBlockerName(3)).toBe("ExposureBelowMinimum");
+    expect(parseBuybackBlockerName(4)).toBe("RatioBelowThreshold");
+    expect(parseBuybackBlockerName(5)).toBe("MathOverflow");
   });
 
   it("returns null for codes outside the known range", () => {
-    expect(parseBuybackBlockerName(5)).toBeNull();
+    expect(parseBuybackBlockerName(6)).toBeNull();
     expect(parseBuybackBlockerName(255)).toBeNull();
     expect(parseBuybackBlockerName(-1)).toBeNull();
   });
@@ -61,8 +63,9 @@ describe("buybackBlockerCode", () => {
     expect(buybackBlockerCode("CooldownActive")).toBe(0);
     expect(buybackBlockerCode("BelowInsuranceFloor")).toBe(1);
     expect(buybackBlockerCode("HaircutsActive")).toBe(2);
-    expect(buybackBlockerCode("RatioBelowThreshold")).toBe(3);
-    expect(buybackBlockerCode("MathOverflow")).toBe(4);
+    expect(buybackBlockerCode("ExposureBelowMinimum")).toBe(3);
+    expect(buybackBlockerCode("RatioBelowThreshold")).toBe(4);
+    expect(buybackBlockerCode("MathOverflow")).toBe(5);
   });
 
   it("returns null for unknown names", () => {
