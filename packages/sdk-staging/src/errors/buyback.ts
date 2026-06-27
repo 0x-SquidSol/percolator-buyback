@@ -42,7 +42,7 @@ export const BUYBACK_BLOCKER = {
   BelowInsuranceFloor: 1,
   /** One or more markets are paying haircut on positive PnL. */
   HaircutsActive: 2,
-  /** `total_exposure_q` is zero; no measurable risk for the ratio gate to weigh. */
+  /** `market_exposure_q` is zero; no measurable risk for the ratio gate to weigh. */
   ExposureBelowMinimum: 3,
   /** `fund × DEN` < `exposure × NUM`; insurance under-collateralized for buyback. */
   RatioBelowThreshold: 4,

@@ -5,7 +5,7 @@
 //!
 //! 1. Resolve and validate the target market's insurance fund and bound
 //!    buyback accounts (handler crate concern; not in this module).
-//! 2. [`total_protocol_exposure`] — computes the market's risk-weighted
+//! 2. [`market_exposure`] — computes a single market's risk-weighted
 //!    exposure.
 //! 3. [`buyback_eligible`] — runs the economic gates and returns the slice
 //!    on success.
@@ -63,7 +63,7 @@ const _: () = assert!(BPS_DENOMINATOR > 0);
 /// Reasons a buyback trigger may be blocked.
 ///
 /// Each variant maps to a distinct failure mode returned by
-/// [`total_protocol_exposure`] or [`buyback_eligible`]. Keeping these as an
+/// [`market_exposure`] or [`buyback_eligible`]. Keeping these as an
 /// enum (vs. string errors) lets callers distinguish steady-state cooldown
 /// from anomalous gate failures without parsing.
 ///
@@ -83,7 +83,7 @@ pub enum BuybackBlocker {
     /// One or more markets are currently paying haircut on positive PnL,
     /// indicating the protocol is in a stressed regime.
     HaircutsActive,
-    /// `total_exposure_q` is zero — there is no measurable risk for the
+    /// `market_exposure_q` is zero — there is no measurable risk for the
     /// ratio gate to weigh the fund against, so "surplus relative to
     /// exposure" is undefined and the buyback must not fire. A non-zero
     /// magnitude floor, where desired, is enforced by the caller before
@@ -101,7 +101,7 @@ pub enum BuybackBlocker {
     MathOverflow,
 }
 
-/// Per-market inputs to [`total_protocol_exposure`].
+/// Per-market inputs to [`market_exposure`].
 ///
 /// Each field mirrors a name documented in PROPOSAL.md §3.1. Callers
 /// resolve every field upstream — the math crate does not import oracle
@@ -127,62 +127,54 @@ pub struct MarketView {
     /// narrowing adapter — an `as u16` truncation could wrap a
     /// corrupted upstream value below 10 000 and silently pass the
     /// runtime check below. The `<= BPS_DENOMINATOR` invariant is
-    /// enforced at runtime by [`total_protocol_exposure`] via
+    /// enforced at runtime by [`market_exposure`] via
     /// [`BuybackBlocker::MathOverflow`].
     pub maintenance_bps: u64,
 }
 
-/// Sums per-market exposure across all live markets.
+/// Computes a single market's risk-weighted exposure.
 ///
-/// Implements the formula in PROPOSAL.md §3.1: for each market,
+/// Implements the formula in PROPOSAL.md §3.1:
 /// `(oi_eff_long_q + oi_eff_short_q) × oracle_price_e6 × maintenance_bps
-/// / BPS_DENOMINATOR`; the per-market values are then summed to produce
-/// the total. Long and short open interest are summed (not netted) — a
-/// balanced book still represents real risk against the insurance fund.
+/// / BPS_DENOMINATOR`. Long and short open interest are summed (not
+/// netted) — a balanced book still represents real risk against the
+/// market's insurance fund.
 ///
-/// All arithmetic is checked. Any overflow at any step short-circuits
-/// with [`BuybackBlocker::MathOverflow`] rather than wrapping or
-/// saturating. The same variant is also returned for two precondition
-/// violations on `MarketView`: (a) `maintenance_bps` exceeds
-/// [`BPS_DENOMINATOR`] (10 000) — an out-of-range bps could silently
-/// inflate exposure; and (b) `oracle_price_e6 == 0` — a missing or
-/// stuck oracle reading could silently zero out the market's
-/// contribution to total exposure, masking real risk. Both
+/// Per PROPOSAL.md §3.2 each market is evaluated independently against
+/// its own insurance fund and its own exposure; there is no cross-market
+/// aggregation. The handler calls this once per buyback check with the
+/// target market's view — never a protocol-wide roll-up — so the input
+/// is a single `MarketView`, not a slice.
+///
+/// All arithmetic is checked. Any overflow short-circuits with
+/// [`BuybackBlocker::MathOverflow`] rather than wrapping or saturating.
+/// The same variant is also returned for two precondition violations on
+/// `MarketView`: (a) `maintenance_bps` exceeds [`BPS_DENOMINATOR`]
+/// (10 000) — an out-of-range bps could silently inflate exposure; and
+/// (b) `oracle_price_e6 == 0` — a missing or stuck oracle reading could
+/// silently zero out the market's exposure, masking real risk. Both
 /// preconditions are folded into the same fail-closed bucket. The
-/// eligibility predicate that consumes this value treats
-/// `MathOverflow` as a gate failure, so the buyback does not fire when
-/// an aggregation step lost precision or an upstream caller supplied
-/// an invalid `MarketView`.
-///
-/// Returns `Ok(0)` for an empty market list.
-pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBlocker> {
-    let mut total: u128 = 0;
-    for m in markets {
-        if m.maintenance_bps as u128 > BPS_DENOMINATOR {
-            return Err(BuybackBlocker::MathOverflow);
-        }
-        if m.oracle_price_e6 == 0 {
-            return Err(BuybackBlocker::MathOverflow);
-        }
-        let oi_sum = m
-            .oi_eff_long_q
-            .checked_add(m.oi_eff_short_q)
-            .ok_or(BuybackBlocker::MathOverflow)?;
-        let notional = oi_sum
-            .checked_mul(m.oracle_price_e6)
-            .ok_or(BuybackBlocker::MathOverflow)?;
-        let weighted = notional
-            .checked_mul(m.maintenance_bps as u128)
-            .ok_or(BuybackBlocker::MathOverflow)?;
-        let market_exposure = weighted / BPS_DENOMINATOR;
-        // Cross-market accumulator. Each market_exposure is in-bounds under
-        // maintenance_bps ≤ BPS_DENOMINATOR; the checked_add keeps the running
-        // sum fail-closed against pathological input rather than wrapping.
-        total = total
-            .checked_add(market_exposure)
-            .ok_or(BuybackBlocker::MathOverflow)?;
+/// eligibility predicate that consumes this value treats `MathOverflow`
+/// as a gate failure, so the buyback does not fire when the computation
+/// lost precision or an upstream caller supplied an invalid `MarketView`.
+pub fn market_exposure(market: MarketView) -> Result<u128, BuybackBlocker> {
+    if market.maintenance_bps as u128 > BPS_DENOMINATOR {
+        return Err(BuybackBlocker::MathOverflow);
     }
-    Ok(total)
+    if market.oracle_price_e6 == 0 {
+        return Err(BuybackBlocker::MathOverflow);
+    }
+    let oi_sum = market
+        .oi_eff_long_q
+        .checked_add(market.oi_eff_short_q)
+        .ok_or(BuybackBlocker::MathOverflow)?;
+    let notional = oi_sum
+        .checked_mul(market.oracle_price_e6)
+        .ok_or(BuybackBlocker::MathOverflow)?;
+    let weighted = notional
+        .checked_mul(market.maintenance_bps as u128)
+        .ok_or(BuybackBlocker::MathOverflow)?;
+    Ok(weighted / BPS_DENOMINATOR)
 }
 
 /// Eligibility gate for a buyback trigger.
@@ -216,7 +208,7 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
 /// arithmetic failure. At realistic input scales this is defense-in-depth
 /// — practical inputs do not approach the u128 boundary — but the
 /// explicit channel keeps pathological input observable in operator logs
-/// alongside the existing overflow handling in [`total_protocol_exposure`].
+/// alongside the existing overflow handling in [`market_exposure`].
 ///
 /// Trust assumptions on parameters:
 ///
@@ -227,11 +219,12 @@ pub fn total_protocol_exposure(markets: &[MarketView]) -> Result<u128, BuybackBl
 /// - `now`, `last_buyback_ts`: caller supplies via Solana `Clock`. No
 ///   defensive sign checks; Solana timestamps post-genesis are
 ///   non-negative by construction.
-/// - `total_exposure_q`: pre-aggregated by [`total_protocol_exposure`].
-///   The Q-format suffix matches the field naming in [`MarketView`].
+/// - `market_exposure_q`: the target market's exposure, computed by
+///   [`market_exposure`]. The Q-format suffix matches the field naming
+///   in [`MarketView`].
 pub fn buyback_eligible(
     fund_balance: u64,
-    total_exposure_q: u128,
+    market_exposure_q: u128,
     last_buyback_ts: i64,
     now: i64,
     haircut_active: bool,
@@ -262,7 +255,7 @@ pub fn buyback_eligible(
     // `fund × DEN >= 0 × NUM` holds for any fund — which would let the
     // buyback fire on a market carrying no live risk. Require a non-zero
     // exposure so the ratio gate is meaningful.
-    if total_exposure_q == 0 {
+    if market_exposure_q == 0 {
         return Err(BuybackBlocker::ExposureBelowMinimum);
     }
 
@@ -270,12 +263,12 @@ pub fn buyback_eligible(
     // widened to u128 and multiplied by 10, the result cannot exceed
     // ~1.84e20, far below `u128::MAX`. The check is retained against any
     // future signature change. The rhs `checked_mul` IS reachable — a
-    // pathologically large `total_exposure_q` near `u128::MAX` overflows
+    // pathologically large `market_exposure_q` near `u128::MAX` overflows
     // when multiplied by 15.
     let lhs = (fund_balance as u128)
         .checked_mul(BUYBACK_RATIO_THRESHOLD_DEN)
         .ok_or(BuybackBlocker::MathOverflow)?;
-    let rhs = total_exposure_q
+    let rhs = market_exposure_q
         .checked_mul(BUYBACK_RATIO_THRESHOLD_NUM)
         .ok_or(BuybackBlocker::MathOverflow)?;
     if lhs < rhs {
@@ -337,44 +330,24 @@ mod tests {
     }
 
     #[test]
-    fn exposure_empty_market_list_returns_zero() {
-        assert_eq!(total_protocol_exposure(&[]), Ok(0));
-    }
-
-    #[test]
     fn exposure_single_market_exact_value() {
         // (1_000 + 500) × 100 × 500 / 10_000 = 7_500
         let m = sample_market(1_000, 500, 100, 500);
-        assert_eq!(total_protocol_exposure(&[m]), Ok(7_500));
-    }
-
-    #[test]
-    fn exposure_multiple_markets_summed() {
-        // m1: (1_000 + 0) × 200 × 500 / 10_000 = 10_000
-        // m2: (0 + 2_000) × 100 × 1_000 / 10_000 = 20_000
-        // m3: (500 + 500) × 50 × 800 / 10_000 = 4_000
-        // total = 34_000
-        let m1 = sample_market(1_000, 0, 200, 500);
-        let m2 = sample_market(0, 2_000, 100, 1_000);
-        let m3 = sample_market(500, 500, 50, 800);
-        assert_eq!(total_protocol_exposure(&[m1, m2, m3]), Ok(34_000));
+        assert_eq!(market_exposure(m), Ok(7_500));
     }
 
     #[test]
     fn exposure_long_only_market_works() {
         // (10_000 + 0) × 1 × 500 / 10_000 = 500
         let m = sample_market(10_000, 0, 1, 500);
-        assert_eq!(total_protocol_exposure(&[m]), Ok(500));
+        assert_eq!(market_exposure(m), Ok(500));
     }
 
     #[test]
-    fn exposure_zero_maintenance_bps_market_contributes_zero() {
-        // bps = 0 ⇒ this market contributes 0 even with non-zero OI
-        // and non-zero price; the rest of the list is unaffected.
+    fn exposure_zero_maintenance_bps_yields_zero() {
+        // bps = 0 ⇒ zero exposure even with large OI and non-zero price.
         let m_zero_bps = sample_market(1_000_000, 1_000_000, 1_000, 0);
-        let m_normal = sample_market(1_000, 0, 100, 500);
-        // m_normal: 1_000 × 100 × 500 / 10_000 = 5_000
-        assert_eq!(total_protocol_exposure(&[m_zero_bps, m_normal]), Ok(5_000),);
+        assert_eq!(market_exposure(m_zero_bps), Ok(0));
     }
 
     #[test]
@@ -382,7 +355,7 @@ mod tests {
         // Path 1: checked_add overflow on (long + short).
         let m_add_overflow = sample_market(u128::MAX, 1, 1, 1);
         assert_eq!(
-            total_protocol_exposure(&[m_add_overflow]),
+            market_exposure(m_add_overflow),
             Err(BuybackBlocker::MathOverflow),
         );
 
@@ -391,7 +364,7 @@ mod tests {
         // price = 4 ⇒ oi_sum × 4 overflows.
         let m_mul_overflow = sample_market(u128::MAX / 2, 0, 4, 1);
         assert_eq!(
-            total_protocol_exposure(&[m_mul_overflow]),
+            market_exposure(m_mul_overflow),
             Err(BuybackBlocker::MathOverflow),
         );
 
@@ -402,7 +375,7 @@ mod tests {
         // exceeds u128::MAX.
         let m_bps_overflow = sample_market(u128::MAX / 9_999, 0, 1, 10_000);
         assert_eq!(
-            total_protocol_exposure(&[m_bps_overflow]),
+            market_exposure(m_bps_overflow),
             Err(BuybackBlocker::MathOverflow),
         );
     }
@@ -413,15 +386,12 @@ mod tests {
         // function rejects it before any arithmetic runs, returning
         // MathOverflow as a fail-closed precondition violation.
         let m = sample_market(1_000, 1_000, 100, 10_001);
-        assert_eq!(
-            total_protocol_exposure(&[m]),
-            Err(BuybackBlocker::MathOverflow),
-        );
+        assert_eq!(market_exposure(m), Err(BuybackBlocker::MathOverflow));
 
         // Boundary: bps = BPS_DENOMINATOR (10_000) is accepted.
         let m_boundary = sample_market(1_000, 0, 1, 10_000);
         // 1_000 × 1 × 10_000 / 10_000 = 1_000.
-        assert_eq!(total_protocol_exposure(&[m_boundary]), Ok(1_000));
+        assert_eq!(market_exposure(m_boundary), Ok(1_000));
     }
 
     #[test]
@@ -430,22 +400,9 @@ mod tests {
         // function rejects it before any arithmetic runs, returning
         // MathOverflow as a fail-closed precondition violation. A
         // missing or stuck oracle would otherwise silently zero out
-        // the market's contribution to total exposure.
+        // the market's exposure, masking real risk.
         let m = sample_market(1_000, 0, 0, 500);
-        assert_eq!(
-            total_protocol_exposure(&[m]),
-            Err(BuybackBlocker::MathOverflow),
-        );
-
-        // One bad market poisons the aggregate even when other markets
-        // are valid — short-circuiting matches how out-of-range bps and
-        // arithmetic overflows are handled.
-        let m_bad = sample_market(1_000, 0, 0, 500);
-        let m_good = sample_market(1_000, 0, 100, 500);
-        assert_eq!(
-            total_protocol_exposure(&[m_good, m_bad]),
-            Err(BuybackBlocker::MathOverflow),
-        );
+        assert_eq!(market_exposure(m), Err(BuybackBlocker::MathOverflow));
     }
 
     // ---------------- buyback_eligible — happy paths ----------------

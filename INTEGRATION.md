@@ -19,7 +19,7 @@ The buyback math primitives — constants, gate-failure types, exposure aggregat
 Steps:
 
 1. Add the `buyback` module with the four hardcoded parameters from PROPOSAL.md §4 and the `BuybackBlocker` enum covering the gate-failure modes.
-2. Add a `total_protocol_exposure` helper that computes a market's exposure under the formula in PROPOSAL.md §3.
+2. Add a `market_exposure` helper that computes a single market's exposure under the formula in PROPOSAL.md §3.
 3. Add a `buyback_eligible` predicate that runs the gates from PROPOSAL.md §2 (cooldown, insurance floor, no active haircut, the non-zero-exposure precondition, and the ratio), evaluated per market against that market's own fund and exposure.
 4. Add Kani harnesses for the boundary properties (no overflow, slice never breaches the insurance floor, monotonicity in fund balance and time, fail-closed on pathological input). Deferred to integration time: `dcccrypto/percolator` already hosts the `kani-proofs/` infrastructure, so harnesses land alongside the file in the destination repo rather than here.
 
@@ -56,7 +56,7 @@ Transfer record: not yet merged.
 
 **Status:** spec-ready — not yet implemented.
 
-The stake program hosts the buyback's gate logic, the persistent buyback state, the buyback pool ATA, and the two events that downstream services index. The stake program's `stake_pool` PDA is already the wrapper's admin (existing top-up / withdraw flows via `vault_auth` signing into `TopUpInsurance` / `WithdrawInsuranceLimited`), so adding the buyback CPI is the same architectural seam. This entry depends on the math crate (for `total_protocol_exposure`, `buyback_eligible`) and the wrapper (for `WithdrawForBuyback`) both being merged first.
+The stake program hosts the buyback's gate logic, the persistent buyback state, the buyback pool ATA, and the two events that downstream services index. The stake program's `stake_pool` PDA is already the wrapper's admin (existing top-up / withdraw flows via `vault_auth` signing into `TopUpInsurance` / `WithdrawInsuranceLimited`), so adding the buyback CPI is the same architectural seam. This entry depends on the math crate (for `market_exposure`, `buyback_eligible`) and the wrapper (for `WithdrawForBuyback`) both being merged first.
 
 Steps:
 

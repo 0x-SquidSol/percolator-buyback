@@ -224,7 +224,7 @@ export const REALIZED_PERC_PER_SOL_SENTINEL: bigint = (1n << 128n) - 1n;
 
 /**
  * True when `ratioBps` carries the divide-by-zero sentinel
- * ({@link RATIO_BPS_SENTINEL}, i.e. on-chain `total_protocol_exposure`
+ * ({@link RATIO_BPS_SENTINEL}, i.e. on-chain `market_exposure`
  * was 0). Returns false for any real value, including u64::MAX-1.
  */
 export function isRatioBpsSentinel(ratioBps: bigint): boolean {
