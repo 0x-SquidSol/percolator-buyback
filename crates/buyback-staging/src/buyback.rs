@@ -3,16 +3,19 @@
 //!
 //! The handler's call sequence is:
 //!
-//! 1. Resolve and validate the target market's insurance fund and bound
+//! 1. Resolve and validate the target market's `BuybackTreasury` and bound
 //!    buyback accounts (handler crate concern; not in this module).
 //! 2. [`market_exposure`] — computes a single market's risk-weighted
 //!    exposure.
 //! 3. [`buyback_eligible`] — runs the economic gates and returns the slice
 //!    on success.
 //!
-//! All four buyback parameters are compile-time constants by design (see
-//! PROPOSAL.md §4 and §7.5). Changing any of them requires a program
-//! upgrade — there is no admin-tunable path.
+//! The buyback gate parameters are compile-time constants by design (see
+//! PROPOSAL.md §4 and §7.5): the per-event cap and the cooldown live here as
+//! constants, and the treasury floor is threaded as a parameter so this
+//! reference predicate stays pure and testable — the handler passes the
+//! constant. Changing any of them requires a program upgrade; there is no
+//! admin-tunable path.
 
 // Explicit import of std's two-argument `Result` so this module's
 // signatures are insulated from any single-argument `pub type Result<T>`
@@ -25,7 +28,7 @@
 // are unaffected (they come via the prelude as values, not types).
 use core::result::Result;
 
-/// Per-event withdrawal cap in basis points of insurance-fund balance
+/// Per-event withdrawal cap in basis points of the treasury balance
 /// (0.1% per event — PROPOSAL.md §4 / §7.2).
 pub const BUYBACK_PER_EVENT_BPS: u64 = 10;
 
@@ -67,9 +70,9 @@ pub enum BuybackBlocker {
     /// Less than [`BUYBACK_COOLDOWN_SECS`] since the previous successful
     /// trigger.
     CooldownActive,
-    /// Insurance fund balance is at or below the admin-set
-    /// `insurance_floor`.
-    BelowInsuranceFloor,
+    /// `BuybackTreasury` balance is at or below `treasury_floor` — the small
+    /// floor that keeps a near-empty treasury from churning dust round-trips.
+    BelowTreasuryFloor,
     /// The target market is currently paying haircut on positive PnL,
     /// indicating that market is in a stressed regime.
     HaircutsActive,
@@ -122,11 +125,11 @@ pub struct MarketView {
 /// Implements the formula in PROPOSAL.md §3.1:
 /// `(oi_eff_long_q + oi_eff_short_q) × oracle_price_e6 × maintenance_bps
 /// / BPS_DENOMINATOR`. Long and short open interest are summed (not
-/// netted) — a balanced book still represents real risk against the
-/// market's insurance fund.
+/// netted) — a balanced book still represents real open risk on the
+/// market.
 ///
 /// Per PROPOSAL.md §3.2 each market is evaluated independently against
-/// its own insurance fund and its own exposure; there is no cross-market
+/// its own treasury and its own exposure; there is no cross-market
 /// aggregation. The handler calls this once per buyback check with the
 /// target market's view — never a protocol-wide roll-up — so the input
 /// is a single `MarketView`, not a slice.
@@ -165,24 +168,26 @@ pub fn market_exposure(market: MarketView) -> Result<u128, BuybackBlocker> {
 /// Eligibility gate for a buyback trigger.
 ///
 /// Runs the economic gates from PROPOSAL.md §2 in cheap-to-expensive order
-/// — cooldown, insurance floor, market stress, and the non-zero-exposure
+/// — cooldown, treasury floor, market stress, and the non-zero-exposure
 /// precondition — and returns the slice size. Eligibility is evaluated per
-/// market against that market's own insurance fund and exposure.
+/// market against that market's own treasury and exposure. The reserve-first
+/// step (PROPOSAL.md §2.1) and the auto-pause health check (§2.4) run in the
+/// handler, before this pure predicate.
 ///
 /// On success, the returned slice has two regimes:
 ///
-/// - **Proportional**: [`BUYBACK_PER_EVENT_BPS`] (10 bps) of `fund_balance`.
-/// - **Clamped**: `fund_balance - insurance_floor` when the proportional
+/// - **Proportional**: [`BUYBACK_PER_EVENT_BPS`] (10 bps) of `treasury_balance`.
+/// - **Clamped**: `treasury_balance - treasury_floor` when the proportional
 ///   value would breach the floor.
 ///
-/// Note the floor's strict-inequality asymmetry: `fund_balance ==
-/// insurance_floor` fails the floor gate (PROPOSAL.md §2.3 specifies
-/// `fund_balance > insurance_floor`), while `fund_balance ==
-/// insurance_floor + 1` passes and may produce a slice of 0 or 1
+/// Note the floor's strict-inequality asymmetry: `treasury_balance ==
+/// treasury_floor` fails the floor gate (PROPOSAL.md §2.3 specifies
+/// `treasury_balance > treasury_floor`), while `treasury_balance ==
+/// treasury_floor + 1` passes and may produce a slice of 0 or 1
 /// depending on the proportional arm's integer rounding.
 ///
 /// **`Ok(0)` IS A CALLER CORRECTNESS CONTRACT.** When the slice rounds
-/// to zero (fund just above floor, proportional truncates), the caller
+/// to zero (treasury just above floor, proportional truncates), the caller
 /// MUST short-circuit without stamping the cooldown timestamp.
 /// PROPOSAL.md §5.1 mandates this: "no point burning a 24h slot on a
 /// zero-byte event." A handler that forgets this contract will burn a
@@ -200,7 +205,7 @@ pub fn market_exposure(market: MarketView) -> Result<u128, BuybackBlocker> {
 ///   crate trusts the boolean as that market's stress signal; the handler
 ///   passes the market's own haircut status, so a healthy market is not
 ///   blocked by another market's stress (the gate is per-market, matching
-///   the per-market insurance fund and exposure).
+///   the per-market treasury and exposure).
 /// - `now`, `last_buyback_ts`: caller supplies via Solana `Clock`. No
 ///   defensive sign checks; Solana timestamps post-genesis are
 ///   non-negative by construction.
@@ -208,12 +213,12 @@ pub fn market_exposure(market: MarketView) -> Result<u128, BuybackBlocker> {
 ///   [`market_exposure`]. The Q-format suffix matches the field naming
 ///   in [`MarketView`].
 pub fn buyback_eligible(
-    fund_balance: u64,
+    treasury_balance: u64,
     market_exposure_q: u128,
     last_buyback_ts: i64,
     now: i64,
     haircut_active: bool,
-    insurance_floor: u64,
+    treasury_floor: u64,
 ) -> Result<u64, BuybackBlocker> {
     // Gate 1: Cooldown — `now >= last_buyback_ts + BUYBACK_COOLDOWN_SECS`.
     let next_eligible_ts = last_buyback_ts
@@ -223,9 +228,9 @@ pub fn buyback_eligible(
         return Err(BuybackBlocker::CooldownActive);
     }
 
-    // Gate 2: Floor — strict `fund_balance > insurance_floor`.
-    if fund_balance <= insurance_floor {
-        return Err(BuybackBlocker::BelowInsuranceFloor);
+    // Gate 2: Floor — strict `treasury_balance > treasury_floor`.
+    if treasury_balance <= treasury_floor {
+        return Err(BuybackBlocker::BelowTreasuryFloor);
     }
 
     // Gate 3: Stress — no haircut active on this market.
@@ -244,12 +249,12 @@ pub fn buyback_eligible(
     // Slice computation. The proportional arm uses `checked_mul` to bound
     // u64 overflow at the source; the clamped arm uses `saturating_sub`
     // safely because the floor gate has already established
-    // `fund_balance > insurance_floor`.
-    let slice_proportional = fund_balance
+    // `treasury_balance > treasury_floor`.
+    let slice_proportional = treasury_balance
         .checked_mul(BUYBACK_PER_EVENT_BPS)
         .ok_or(BuybackBlocker::MathOverflow)?
         / (BPS_DENOMINATOR as u64);
-    let slice_clamped = fund_balance.saturating_sub(insurance_floor);
+    let slice_clamped = treasury_balance.saturating_sub(treasury_floor);
     Ok(slice_proportional.min(slice_clamped))
 }
 
@@ -365,7 +370,7 @@ mod tests {
 
     #[test]
     fn predicate_all_gates_pass_proportional_slice() {
-        // fund=1_000_000, exposure=500_000 (non-zero → precondition passes).
+        // treasury=1_000_000, exposure=500_000 (non-zero → precondition passes).
         // proportional = 1_000_000 × 10 / 10_000 = 1_000.
         // clamped = 1_000_000 - 100_000 = 900_000.
         // min = 1_000.
@@ -377,8 +382,8 @@ mod tests {
 
     #[test]
     fn predicate_clamped_slice_arm() {
-        // fund just above floor; clamped < proportional.
-        // fund = 100_005, floor = 100_000.
+        // treasury just above floor; clamped < proportional.
+        // treasury = 100_005, floor = 100_000.
         // proportional = 100_005 × 10 / 10_000 = 100.
         // clamped = 5.
         // min = 5.
@@ -391,8 +396,8 @@ mod tests {
 
     #[test]
     fn predicate_zero_slice_when_proportional_rounds_to_zero() {
-        // fund × BPS / DENOM rounds to 0 when fund × BPS < DENOM.
-        // fund = 100, floor = 99 → proportional = 0, clamped = 1, min = 0.
+        // treasury × BPS / DENOM rounds to 0 when treasury × BPS < DENOM.
+        // treasury = 100, floor = 99 → proportional = 0, clamped = 1, min = 0.
         // exposure = 60 (non-zero → precondition passes).
         assert_eq!(buyback_eligible(100, 60, 0, 100_000, false, 99), Ok(0),);
     }
@@ -432,16 +437,16 @@ mod tests {
 
     #[test]
     fn predicate_floor_equal_blocked() {
-        // fund == floor → fails (strict `>` per PROPOSAL.md §2.3).
+        // treasury == floor → fails (strict `>` per PROPOSAL.md §2.3).
         assert_eq!(
             buyback_eligible(100_000, 500_000, 0, 100_000, false, 100_000),
-            Err(BuybackBlocker::BelowInsuranceFloor),
+            Err(BuybackBlocker::BelowTreasuryFloor),
         );
     }
 
     #[test]
     fn predicate_floor_plus_one_passes() {
-        // fund = floor + 1 → passes; slice clamped to 1.
+        // treasury = floor + 1 → passes; slice clamped to 1.
         // proportional = 100_001 × 10 / 10_000 = 100.
         // clamped = 1.
         // min = 1.
@@ -503,8 +508,8 @@ mod tests {
 
     #[test]
     fn predicate_slice_multiply_overflow() {
-        // fund × BPS_PER_EVENT (10) overflows u64 when fund > u64::MAX/10.
-        // fund = u64::MAX, exposure small enough that ratio passes.
+        // treasury × BPS_PER_EVENT (10) overflows u64 when treasury > u64::MAX/10.
+        // treasury = u64::MAX, exposure small enough that the floor passes.
         // u64::MAX × 10 wraps in u64 → checked_mul returns None.
         assert_eq!(
             buyback_eligible(u64::MAX, 1_000, 0, 100_000, false, 0),
@@ -557,24 +562,24 @@ mod tests {
     #[test]
     fn predicate_gate_ordering_floor_before_exposure() {
         // Cheap-to-expensive ordering: the floor gate fires before the
-        // exposure precondition. fund == floor → BelowInsuranceFloor (strict
+        // exposure precondition. treasury == floor → BelowTreasuryFloor (strict
         // `>` per §2.3); the zero exposure would also block if reached.
         assert_eq!(
             buyback_eligible(100_000, 0, 0, 100_000, false, 100_000),
-            Err(BuybackBlocker::BelowInsuranceFloor),
+            Err(BuybackBlocker::BelowTreasuryFloor),
         );
     }
 
     #[test]
     fn predicate_gate_ordering_floor_before_haircut() {
         // Cheap-to-expensive ordering: floor gate fires before haircut
-        // gate. Both would fail simultaneously: fund == floor and
+        // gate. Both would fail simultaneously: treasury == floor and
         // haircut_active = true. Floor is checked first, so the
-        // returned variant must be BelowInsuranceFloor, not HaircutsActive.
+        // returned variant must be BelowTreasuryFloor, not HaircutsActive.
         // (Cooldown trivially passes: 0 + 86_400 < 100_000.)
         assert_eq!(
             buyback_eligible(100_000, 500_000, 0, 100_000, true, 100_000),
-            Err(BuybackBlocker::BelowInsuranceFloor),
+            Err(BuybackBlocker::BelowTreasuryFloor),
         );
     }
 }
