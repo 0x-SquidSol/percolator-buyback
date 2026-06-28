@@ -83,7 +83,7 @@ describe("probeEligibility", () => {
   });
 
   it("classifies a numeric Custom-code blocker log as blocked", async () => {
-    // 0x1771 = 6001 → BuybackBlocker discriminant 1 → "BelowInsuranceFloor".
+    // 0x1771 = 6001 → BuybackBlocker discriminant 1 → "BelowTreasuryFloor".
     const conn = mockConnection({
       err: { InstructionError: [0, { Custom: 6001 }] },
       logs: [
@@ -96,7 +96,7 @@ describe("probeEligibility", () => {
       const result = await probeEligibility(conn, SLAB, PAYER);
       expect(result).toEqual({
         outcome: "blocked",
-        blocker: "BelowInsuranceFloor",
+        blocker: "BelowTreasuryFloor",
       });
     } finally {
       spy.mockRestore();
