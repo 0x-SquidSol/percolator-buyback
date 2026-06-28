@@ -25,17 +25,6 @@
 // are unaffected (they come via the prelude as values, not types).
 use core::result::Result;
 
-/// Numerator of the insurance-fund-to-exposure ratio threshold (1.5×).
-///
-/// Paired with [`BUYBACK_RATIO_THRESHOLD_DEN`]. The eligibility gate
-/// compares `fund_balance × DEN` against `market_exposure × NUM` via
-/// integer cross-multiplication; no fixed-point representation needed.
-/// Equality passes (PROPOSAL.md §2.1: `≥`).
-pub const BUYBACK_RATIO_THRESHOLD_NUM: u128 = 15;
-
-/// Denominator of the insurance-fund-to-exposure ratio threshold (1.5×).
-pub const BUYBACK_RATIO_THRESHOLD_DEN: u128 = 10;
-
 /// Per-event withdrawal cap in basis points of insurance-fund balance
 /// (0.1% per event — PROPOSAL.md §4 / §7.2).
 pub const BUYBACK_PER_EVENT_BPS: u64 = 10;
@@ -47,12 +36,6 @@ pub const BUYBACK_COOLDOWN_SECS: i64 = 86_400;
 /// bps fraction back into a value. Used by the per-market exposure formula
 /// in PROPOSAL.md §3.1 (`maintenance_bps / 10_000`).
 pub const BPS_DENOMINATOR: u128 = 10_000;
-
-// Compile-time invariant: the ratio threshold must always exceed 1×.
-// A misedit that produced NUM <= DEN would silently allow buybacks at
-// any solvency ratio, including under-collateralized states. This
-// const assertion fails the build rather than the tests.
-const _: () = assert!(BUYBACK_RATIO_THRESHOLD_NUM > BUYBACK_RATIO_THRESHOLD_DEN);
 
 // Compile-time invariant: the basis-points denominator must be non-zero
 // so the per-market division `weighted / BPS_DENOMINATOR` cannot panic
@@ -67,7 +50,7 @@ const _: () = assert!(BPS_DENOMINATOR > 0);
 /// enum (vs. string errors) lets callers distinguish steady-state cooldown
 /// from anomalous gate failures without parsing.
 ///
-/// Variants are ordered to match the runtime evaluation sequence: the four
+/// Variants are ordered to match the runtime evaluation sequence: the
 /// economic gates run cheap-to-expensive inside [`buyback_eligible`].
 /// `MathOverflow` sits last by convention because it is a cross-cutting
 /// fail-closed bucket that any `checked_*` site can fire from, not a
@@ -90,21 +73,16 @@ pub enum BuybackBlocker {
     /// The target market is currently paying haircut on positive PnL,
     /// indicating that market is in a stressed regime.
     HaircutsActive,
-    /// `market_exposure_q` is zero — there is no measurable risk for the
-    /// ratio gate to weigh the fund against, so "surplus relative to
-    /// exposure" is undefined and the buyback must not fire. A non-zero
-    /// magnitude floor, where desired, is enforced by the caller before
-    /// this predicate runs.
+    /// `market_exposure_q` is zero — the market has no live open interest,
+    /// so it is not a real traded market and the buyback does not fire on
+    /// it. (A non-zero magnitude floor, where desired, is enforced by the
+    /// caller before this predicate runs.)
     ExposureBelowMinimum,
-    /// `fund × DEN` < `exposure × NUM`. The insurance fund is not
-    /// over-collateralized enough relative to the market's current exposure.
-    RatioBelowThreshold,
-    /// A `checked_*` arithmetic operation returned `None` — either while
-    /// computing the market's exposure or while running the cross-multiply
-    /// ratio comparison. Treated as a fail-closed condition; should be
-    /// unreachable in practice but defends against pathological input.
-    /// Conventionally placed last as a cross-cutting bucket; do not
-    /// re-sort alphabetically.
+    /// A `checked_*` arithmetic operation returned `None` — while computing
+    /// the market's exposure or sizing the slice. Treated as a fail-closed
+    /// condition; should be unreachable in practice but defends against
+    /// pathological input. Conventionally placed last as a cross-cutting
+    /// bucket; do not re-sort alphabetically.
     MathOverflow,
 }
 
@@ -187,10 +165,9 @@ pub fn market_exposure(market: MarketView) -> Result<u128, BuybackBlocker> {
 /// Eligibility gate for a buyback trigger.
 ///
 /// Runs the economic gates from PROPOSAL.md §2 in cheap-to-expensive order
-/// — cooldown, insurance floor, market stress, then the exposure ratio
-/// (guarded by a non-zero-exposure precondition) — and returns the slice
-/// size. Eligibility is evaluated per market against that market's own
-/// insurance fund and exposure.
+/// — cooldown, insurance floor, market stress, and the non-zero-exposure
+/// precondition — and returns the slice size. Eligibility is evaluated per
+/// market against that market's own insurance fund and exposure.
 ///
 /// On success, the returned slice has two regimes:
 ///
@@ -256,31 +233,12 @@ pub fn buyback_eligible(
         return Err(BuybackBlocker::HaircutsActive);
     }
 
-    // Gate 4: Ratio — cross-multiplied form of `fund / exposure >= 1.5`.
-    // Equality passes (PROPOSAL.md §2.1: `>=`).
-    //
-    // Exposure precondition: a zero exposure makes the ratio degenerate —
-    // `fund × DEN >= 0 × NUM` holds for any fund — which would let the
-    // buyback fire on a market carrying no live risk. Require a non-zero
-    // exposure so the ratio gate is meaningful.
+    // Gate 4: Exposure precondition — the market must have live open
+    // interest. A zero-exposure market is not a real traded market, so the
+    // buyback does not fire on it. `market_exposure_q` is used only for this
+    // check now — there is no solvency ratio.
     if market_exposure_q == 0 {
         return Err(BuybackBlocker::ExposureBelowMinimum);
-    }
-
-    // The lhs `checked_mul` is defense-in-depth; with `fund_balance: u64`
-    // widened to u128 and multiplied by 10, the result cannot exceed
-    // ~1.84e20, far below `u128::MAX`. The check is retained against any
-    // future signature change. The rhs `checked_mul` IS reachable — a
-    // pathologically large `market_exposure_q` near `u128::MAX` overflows
-    // when multiplied by 15.
-    let lhs = (fund_balance as u128)
-        .checked_mul(BUYBACK_RATIO_THRESHOLD_DEN)
-        .ok_or(BuybackBlocker::MathOverflow)?;
-    let rhs = market_exposure_q
-        .checked_mul(BUYBACK_RATIO_THRESHOLD_NUM)
-        .ok_or(BuybackBlocker::MathOverflow)?;
-    if lhs < rhs {
-        return Err(BuybackBlocker::RatioBelowThreshold);
     }
 
     // Slice computation. The proportional arm uses `checked_mul` to bound
@@ -298,16 +256,6 @@ pub fn buyback_eligible(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Locks the cross-multiplication convention against accidental future
-    /// edits. If this test ever fails, the gate's comparison direction may
-    /// have silently inverted. The `NUM > DEN` invariant is locked
-    /// separately by a compile-time `const _: () = assert!(...)` above.
-    #[test]
-    fn ratio_threshold_constants_lock() {
-        assert_eq!(BUYBACK_RATIO_THRESHOLD_NUM, 15);
-        assert_eq!(BUYBACK_RATIO_THRESHOLD_DEN, 10);
-    }
 
     /// Locks the basis-points denominator at exactly 10 000. A misedit
     /// would silently scale every exposure and slice computation by
@@ -417,7 +365,7 @@ mod tests {
 
     #[test]
     fn predicate_all_gates_pass_proportional_slice() {
-        // fund=1_000_000, exposure=500_000 → ratio = 2.0 (≥ 1.5).
+        // fund=1_000_000, exposure=500_000 (non-zero → precondition passes).
         // proportional = 1_000_000 × 10 / 10_000 = 1_000.
         // clamped = 1_000_000 - 100_000 = 900_000.
         // min = 1_000.
@@ -434,7 +382,7 @@ mod tests {
         // proportional = 100_005 × 10 / 10_000 = 100.
         // clamped = 5.
         // min = 5.
-        // exposure = 50_000 → ratio = 2.0001 (≥ 1.5).
+        // exposure = 50_000 (non-zero → precondition passes).
         assert_eq!(
             buyback_eligible(100_005, 50_000, 0, 100_000, false, 100_000),
             Ok(5),
@@ -445,7 +393,7 @@ mod tests {
     fn predicate_zero_slice_when_proportional_rounds_to_zero() {
         // fund × BPS / DENOM rounds to 0 when fund × BPS < DENOM.
         // fund = 100, floor = 99 → proportional = 0, clamped = 1, min = 0.
-        // exposure = 60 → ratio = 1.667 (≥ 1.5).
+        // exposure = 60 (non-zero → precondition passes).
         assert_eq!(buyback_eligible(100, 60, 0, 100_000, false, 99), Ok(0),);
     }
 
@@ -512,36 +460,8 @@ mod tests {
     }
 
     #[test]
-    fn predicate_ratio_below_threshold() {
-        // fund=1_000_000, exposure=700_000 → ratio ≈ 1.43 (< 1.5).
-        // 1_000_000 × 10 = 10_000_000.
-        // 700_000 × 15 = 10_500_000.
-        // lhs < rhs → fail.
-        assert_eq!(
-            buyback_eligible(1_000_000, 700_000, 0, 100_000, false, 100_000),
-            Err(BuybackBlocker::RatioBelowThreshold),
-        );
-    }
-
-    #[test]
-    fn predicate_ratio_exactly_at_threshold_passes() {
-        // fund × 10 == exposure × 15 → ratio = 1.5 exactly. Equality
-        // passes (PROPOSAL.md §2.1: `≥`).
-        // fund = 15_000, exposure = 10_000.
-        // 15_000 × 10 = 150_000 = 10_000 × 15. lhs ≥ rhs.
-        // proportional = 15_000 × 10 / 10_000 = 15.
-        // clamped = 15_000 - 100 = 14_900.
-        // min = 15.
-        assert_eq!(
-            buyback_eligible(15_000, 10_000, 0, 100_000, false, 100),
-            Ok(15),
-        );
-    }
-
-    #[test]
     fn predicate_zero_exposure_blocked() {
-        // exposure = 0 → no measurable risk; the ratio gate would be
-        // degenerate, so the buyback must not fire.
+        // exposure = 0 → no live open interest; the buyback must not fire.
         assert_eq!(
             buyback_eligible(1_000_000, 0, 0, 100_000, false, 100_000),
             Err(BuybackBlocker::ExposureBelowMinimum),
@@ -550,8 +470,7 @@ mod tests {
 
     #[test]
     fn predicate_minimal_nonzero_exposure_passes() {
-        // exposure = 1 (minimal non-zero) clears the precondition; with a
-        // large fund the ratio gate still passes.
+        // exposure = 1 (minimal non-zero) clears the precondition.
         // proportional = 1_000_000 × 10 / 10_000 = 1_000.
         assert_eq!(
             buyback_eligible(1_000_000, 1, 0, 100_000, false, 100_000),
@@ -583,18 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn predicate_rhs_cross_multiply_overflow() {
-        // exposure × 15 overflows when exposure > u128::MAX / 15.
-        // u128::MAX / 14 × 15 > u128::MAX → overflows on rhs checked_mul.
-        // (lhs path is unreachable from u64 fund_balance — see function
-        // doc-comment.)
-        assert_eq!(
-            buyback_eligible(1_000_000, u128::MAX / 14, 0, 100_000, false, 100_000,),
-            Err(BuybackBlocker::MathOverflow),
-        );
-    }
-
-    #[test]
     fn predicate_slice_multiply_overflow() {
         // fund × BPS_PER_EVENT (10) overflows u64 when fund > u64::MAX/10.
         // fund = u64::MAX, exposure small enough that ratio passes.
@@ -609,12 +516,11 @@ mod tests {
 
     #[test]
     fn predicate_gate_ordering_returns_cheapest_failure() {
-        // Both cooldown AND ratio fail. Cooldown is checked first
-        // (cheap-to-expensive ordering per PROPOSAL.md §2), so the
-        // returned error must be CooldownActive, not RatioBelowThreshold.
+        // Cooldown is checked first (cheap-to-expensive ordering per
+        // PROPOSAL.md §2), so a cooldown failure short-circuits before any
+        // later gate, returning CooldownActive.
         let last_ts: i64 = 1_000_000;
         let now: i64 = last_ts + BUYBACK_COOLDOWN_SECS - 1; // cooldown fails
-                                                            // exposure high enough that ratio also fails: 1_000_000 / 700_000 ≈ 1.43
         assert_eq!(
             buyback_eligible(1_000_000, 700_000, last_ts, now, false, 100_000),
             Err(BuybackBlocker::CooldownActive),
@@ -649,24 +555,13 @@ mod tests {
     }
 
     #[test]
-    fn predicate_gate_ordering_floor_before_ratio() {
-        // Cheap-to-expensive ordering: floor gate fires before ratio
-        // gate. fund == floor → BelowInsuranceFloor (strict > per §2.3).
-        // exposure = 700_000 would also fail the ratio check if reached.
+    fn predicate_gate_ordering_floor_before_exposure() {
+        // Cheap-to-expensive ordering: the floor gate fires before the
+        // exposure precondition. fund == floor → BelowInsuranceFloor (strict
+        // `>` per §2.3); the zero exposure would also block if reached.
         assert_eq!(
-            buyback_eligible(100_000, 700_000, 0, 100_000, false, 100_000),
+            buyback_eligible(100_000, 0, 0, 100_000, false, 100_000),
             Err(BuybackBlocker::BelowInsuranceFloor),
-        );
-    }
-
-    #[test]
-    fn predicate_gate_ordering_haircut_before_ratio() {
-        // Cheap-to-expensive ordering: haircut gate fires before ratio
-        // gate. haircut_active = true → HaircutsActive.
-        // exposure = 700_000 would also fail the ratio check if reached.
-        assert_eq!(
-            buyback_eligible(1_000_000, 700_000, 0, 100_000, true, 100_000),
-            Err(BuybackBlocker::HaircutsActive),
         );
     }
 
