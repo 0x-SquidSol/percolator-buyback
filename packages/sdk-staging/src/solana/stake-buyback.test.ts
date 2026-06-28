@@ -12,12 +12,12 @@ import { PublicKey } from "@solana/web3.js";
 import {
   STAKE_IX_BUYBACK,
   deriveBuybackState,
-  deriveBuybackPool,
+  deriveBuybackTreasury,
   deriveBuybackConfig,
   encodeStakeBindBuybackConfig,
   encodeStakeTriggerBuyback,
   encodeStakeSettleBuyback,
-  encodeStakeEmergencyDrainBuybackPool,
+  encodeStakeEmergencyDrainTreasury,
   decodeBuybackConfig,
   BUYBACK_CONFIG_BYTE_LENGTH,
 } from "./stake-buyback.js";
@@ -38,7 +38,7 @@ describe("STAKE_IX_BUYBACK", () => {
     expect(STAKE_IX_BUYBACK.BindBuybackConfig).toBe(24);
     expect(STAKE_IX_BUYBACK.TriggerBuyback).toBe(25);
     expect(STAKE_IX_BUYBACK.SettleBuyback).toBe(26);
-    expect(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool).toBe(27);
+    expect(STAKE_IX_BUYBACK.EmergencyDrainTreasury).toBe(27);
     expect(Object.isFrozen(STAKE_IX_BUYBACK)).toBe(true);
   });
 });
@@ -166,11 +166,11 @@ describe("encodeStakeSettleBuyback", () => {
   });
 });
 
-describe("encodeStakeEmergencyDrainBuybackPool", () => {
+describe("encodeStakeEmergencyDrainTreasury", () => {
   it("emits a single-byte tag with no payload", () => {
-    const bytes = encodeStakeEmergencyDrainBuybackPool();
+    const bytes = encodeStakeEmergencyDrainTreasury();
     expect(bytes.length).toBe(1);
-    expect(bytes[0]).toBe(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool);
+    expect(bytes[0]).toBe(STAKE_IX_BUYBACK.EmergencyDrainTreasury);
   });
 });
 
@@ -204,27 +204,27 @@ describe("deriveBuybackState", () => {
     expect(actual[1]).toBe(expected[1]);
   });
 
-  it("differs from deriveBuybackPool for the same pool — distinct seed strings", () => {
+  it("differs from deriveBuybackTreasury for the same pool — distinct seed strings", () => {
     const stateAddr = deriveBuybackState(FIXED_POOL, FIXED_PROGRAM_ID);
-    const poolAddr = deriveBuybackPool(FIXED_POOL, FIXED_PROGRAM_ID);
-    expect(stateAddr[0].toBase58()).not.toBe(poolAddr[0].toBase58());
+    const treasuryAddr = deriveBuybackTreasury(FIXED_POOL, FIXED_PROGRAM_ID);
+    expect(stateAddr[0].toBase58()).not.toBe(treasuryAddr[0].toBase58());
   });
 });
 
-describe("deriveBuybackPool", () => {
+describe("deriveBuybackTreasury", () => {
   it("returns a [PublicKey, bump] pair", () => {
-    const [pda, bump] = deriveBuybackPool(FIXED_POOL, FIXED_PROGRAM_ID);
+    const [pda, bump] = deriveBuybackTreasury(FIXED_POOL, FIXED_PROGRAM_ID);
     expect(pda).toBeInstanceOf(PublicKey);
     expect(typeof bump).toBe("number");
   });
 
-  it("uses the literal seed string 'buyback_pool'", () => {
+  it("uses the literal seed string 'buyback_treasury'", () => {
     const TEXT = new TextEncoder();
     const expected = PublicKey.findProgramAddressSync(
-      [TEXT.encode("buyback_pool"), FIXED_POOL.toBytes()],
+      [TEXT.encode("buyback_treasury"), FIXED_POOL.toBytes()],
       FIXED_PROGRAM_ID,
     );
-    const actual = deriveBuybackPool(FIXED_POOL, FIXED_PROGRAM_ID);
+    const actual = deriveBuybackTreasury(FIXED_POOL, FIXED_PROGRAM_ID);
     expect(actual[0].toBase58()).toBe(expected[0].toBase58());
     expect(actual[1]).toBe(expected[1]);
   });
@@ -253,9 +253,9 @@ describe("deriveBuybackConfig", () => {
   it("differs from the state and pool PDAs for the same pool", () => {
     const cfg = deriveBuybackConfig(FIXED_POOL, FIXED_PROGRAM_ID)[0].toBase58();
     const state = deriveBuybackState(FIXED_POOL, FIXED_PROGRAM_ID)[0].toBase58();
-    const pool = deriveBuybackPool(FIXED_POOL, FIXED_PROGRAM_ID)[0].toBase58();
+    const treasury = deriveBuybackTreasury(FIXED_POOL, FIXED_PROGRAM_ID)[0].toBase58();
     expect(cfg).not.toBe(state);
-    expect(cfg).not.toBe(pool);
+    expect(cfg).not.toBe(treasury);
   });
 });
 

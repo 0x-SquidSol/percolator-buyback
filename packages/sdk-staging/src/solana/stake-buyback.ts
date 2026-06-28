@@ -29,7 +29,7 @@
  * **Programmer-facing notes the integrator MUST honor at transfer:**
  * - The `STAKE_IX_BUYBACK` enum below is a placeholder. At transfer,
  *   merge its four keys (`BindBuybackConfig`, `TriggerBuyback`,
- *   `SettleBuyback`, `EmergencyDrainBuybackPool`) into the destination's
+ *   `SettleBuyback`, `EmergencyDrainTreasury`) into the destination's
  *   existing `STAKE_IX` enum, assigning the next available tags. The
  *   on-chain `StakeInstruction` decoder
  *   (`percolator-stake/src/instruction.rs`) occupies tags 0-10, 12-16,
@@ -44,12 +44,11 @@
  *   this staging crate. Destination convention makes it optional with
  *   default `getStakeProgramId()` — match that pattern at transfer
  *   (see existing `deriveStakePool` for the idiom).
- * - `WithdrawForBuyback` (the wrapper-side CPI target the stake
- *   program calls into) is intentionally NOT exported here. It is a
- *   wrapper-internal CPI primitive with no legitimate public TS caller
- *   — exposing an encoder for it would be a footgun (cranker could
- *   submit it directly and bypass the gate sequence). The stake
- *   program constructs the CPI internally via `cpi::invoke_signed`.
+ * - There is NO `WithdrawForBuyback` and no wrapper interaction. The
+ *   protocol-fee-funded design funds the buyback from a `BuybackTreasury`
+ *   (swept protocol-fee revenue) and never withdraws from the insurance
+ *   fund, so the buyback never CPIs into the wrapper (`percolator-prog`
+ *   is unchanged). See the design spec / INTEGRATION.md.
  */
 
 import { PublicKey } from "@solana/web3.js";
@@ -75,7 +74,7 @@ export const STAKE_IX_BUYBACK = {
   BindBuybackConfig: 24,
   TriggerBuyback: 25,
   SettleBuyback: 26,
-  EmergencyDrainBuybackPool: 27,
+  EmergencyDrainTreasury: 27,
 } as const;
 Object.freeze(STAKE_IX_BUYBACK);
 
@@ -108,23 +107,24 @@ export function deriveBuybackState(
 }
 
 /**
- * Derive the per-pool buyback pool ATA — the SPL Token account that
- * holds the slice between trigger and settle.
+ * Derive the per-pool BuybackTreasury PDA — the program-owned token
+ * account that holds swept protocol-fee revenue, the buyback's sole spend
+ * source. The reserved slice sits here between trigger and settle.
  *
- * Seeds: `["buyback_pool", pool_pda]`. Owned by the stake program,
- * holds the slab's collateral mint. Per PROPOSAL.md §11 ("Buyback pool
- * custody — fresh PDA owned by the buyback-hosting program").
+ * Seeds: `["buyback_treasury", pool_pda]`. Owned by the stake program,
+ * holds the market's quote/collateral mint. Per the protocol-fee-funded
+ * design (PROPOSAL.md §11 "Custody"); insurance is never involved.
  *
  * @param pool       The stake pool PDA derived from the slab.
  * @param programId  The percolator-stake program ID.
  * @returns `[pda, bump]`
  */
-export function deriveBuybackPool(
+export function deriveBuybackTreasury(
   pool: PublicKey,
   programId: PublicKey,
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [TEXT.encode("buyback_pool"), pool.toBytes()],
+    [TEXT.encode("buyback_treasury"), pool.toBytes()],
     programId,
   );
 }
@@ -206,10 +206,12 @@ export function encodeStakeBindBuybackConfig(
 }
 
 /**
- * `trigger_buyback` takes no instruction-data payload — the handler
- * reads slab and pool state from the account list, runs the four math
- * gates, and (on success) CPIs into the wrapper to move the slice.
- * The cranker submits an empty-data ix with the canonical account list.
+ * `trigger_buyback` takes no instruction-data payload — the handler reads
+ * the market, treasury, and bound-config state from the account list, runs
+ * the reserve-first step and the gates against the treasury, and (on
+ * success) reserves the slice inside the `BuybackTreasury`. No wrapper CPI;
+ * no insurance/vault/LP account is touched. The cranker submits an
+ * empty-data ix with the canonical account list.
  */
 export interface TriggerBuybackArgs {}
 
@@ -241,17 +243,18 @@ export function encodeStakeSettleBuyback(
 }
 
 /**
- * `emergency_drain_buyback_pool` returns the pool's contents to the
- * slab insurance fund. Callable only when `BuybackState.settle_disabled
- * == 1`, which is set ONLY by program upgrade — not by any runtime
- * instruction. Carries no instruction-data payload.
+ * `emergency_drain_treasury` returns a stranded reserved slice to the
+ * `BuybackTreasury` — a protocol problem, never a staker one; insurance is
+ * never involved. Callable only when `BuybackState.settle_disabled == 1`,
+ * which is set ONLY by program upgrade — not by any runtime instruction.
+ * Carries no instruction-data payload.
  */
-export interface EmergencyDrainBuybackPoolArgs {}
+export interface EmergencyDrainTreasuryArgs {}
 
-export function encodeStakeEmergencyDrainBuybackPool(
-  _args: EmergencyDrainBuybackPoolArgs = {},
+export function encodeStakeEmergencyDrainTreasury(
+  _args: EmergencyDrainTreasuryArgs = {},
 ): Uint8Array {
-  return encU8(STAKE_IX_BUYBACK.EmergencyDrainBuybackPool);
+  return encU8(STAKE_IX_BUYBACK.EmergencyDrainTreasury);
 }
 
 // ═══════════════════════════════════════════════════════════════
