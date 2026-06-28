@@ -20,9 +20,9 @@
  *      `@percolatorct/sdk` and carry over as-is. Inline the real
  *      account-list construction at the call site (using the stake
  *      program ID and the SDK's `deriveBuybackState` /
- *      `deriveBuybackPool` PDA helpers), or forward to a
- *      destination-side helper if the keeper repo prefers that
- *      shape. The classification logic, log shapes, and data bytes
+ *      `deriveBuybackTreasury` / `deriveBuybackConfig` PDA helpers), or
+ *      forward to a destination-side helper if the keeper repo prefers
+ *      that shape. The classification logic, log shapes, and data bytes
  *      do not change.
  *
  * **What's stubbed today, what isn't:** the data byte the probe
@@ -42,7 +42,7 @@
  * remaining swap is scoped: drop the local stub function, then
  * either inline the real account-list construction at the call
  * site (using the stake program ID + the existing PDA derivations
- * `deriveBuybackState` / `deriveBuybackPool` from the SDK) or
+ * `deriveBuybackState` / `deriveBuybackTreasury` / `deriveBuybackConfig` from the SDK) or
  * forward to a destination-side helper if the keeper repo prefers
  * that shape. The classifier, log shapes, and data bytes do not
  * move.
@@ -98,14 +98,17 @@ export type EligibilityResult =
  * byte the destination's stake program will dispatch on. The
  * ACCOUNT LIST is still a placeholder until the destination's
  * `trigger_buyback` handler in `dcccrypto/percolator-stake` defines
- * its canonical accounts. Per `PROPOSAL.md` §6.2 the eventual list
- * will read: insurance fund (writable, debit), buyback pool PDA
- * (writable, credit), buyback state PDA (writable, stamp), the slab
- * and its market accounts (readable for the gate check), `Clock`
- * sysvar (readable), cranker (signer, fee payer). At that landing,
- * the integrator drops this whole helper and replaces the call site
- * with the real account-list construction; the data bytes (and the
- * `encodeStakeTriggerBuyback` import) carry over unchanged.
+ * its canonical accounts. Per the protocol-fee-funded design
+ * (INTEGRATION.md `## dcccrypto/percolator-stake` step 4) the eventual
+ * list will read: `BuybackTreasury` (writable — the slice is reserved
+ * here), `BuybackState` PDA (writable, stamp), `BuybackConfig` PDA
+ * (readable — the bound token/pool/pair), the market account (readable,
+ * for exposure + health), cranker (signer, fee payer). No insurance,
+ * vault, or LP account is involved, and `Clock` is read via syscall,
+ * not passed as an account. At that landing, the integrator drops this
+ * whole helper and replaces the call site with the real account-list
+ * construction; the data bytes (and the `encodeStakeTriggerBuyback`
+ * import) carry over unchanged.
  *
  * `programId` points at the System Program — also a placeholder. A
  * real RPC against this stub would respond with a malformed-ix
