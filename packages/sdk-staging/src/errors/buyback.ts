@@ -9,16 +9,16 @@
  * prefers per-feature error files, drop the file at
  * `src/abi/errors/buyback.ts` and re-export from `src/abi/errors.ts`).
  *
- * **Source of truth:** the variant order MUST match the math crate's
- * `BuybackBlocker` enum in `dcccrypto/percolator/src/buyback.rs`. The
- * append-only locker rule — variants added only at the tail, never
- * reordered or removed — takes effect once that enum lands on-chain and
- * downstream services begin pinning the numeric codes. Until then, both
- * this mirror and the staged enum are still being finalized and may be
- * reordered together (as they were when `ExposureBelowMinimum` was
- * inserted). After transfer, if the destination appends a variant,
- * append it here at the same index so the discriminant mapping stays
- * correct.
+ * **Source of truth — canonical order.** The variant order below is the
+ * canonical declaration order pinned in `PROPOSAL.md` §6.1 /
+ * `INTEGRATION.md` for the protocol-fee-funded design (gate-evaluation
+ * sequence, `MathOverflow` last). It MUST match the math crate's
+ * `BuybackBlocker` enum in `dcccrypto/percolator/src/buyback.rs`
+ * byte-for-byte — that enum is being retargeted to the same order. The
+ * append-only locker rule (variants added only at the tail, never
+ * reordered) takes effect once the enum lands on-chain and downstream
+ * services begin pinning the numeric codes; until transfer the order is
+ * finalized here against the pinned canonical order.
  *
  * **Why this is in the SDK and not keeper-private:** the
  * `BuybackBlocker` discriminant is the public failure-mode contract
@@ -35,25 +35,25 @@
  * declaration index. The index is the discriminant value the Rust
  * enum serializes to under `#[repr(u8)]` or via Borsh / numeric cast.
  *
- * **Order mirrors `crates/buyback-staging/src/buyback.rs`** — variants
- * are listed in the staged enum's declaration order. Post-transfer (once
- * on-chain) new variants append at the tail and existing variants never
- * move; pre-transfer the order tracks the staged enum and may still
- * change.
+ * **Canonical declaration order** (see the module header): the
+ * gate-evaluation sequence with `MathOverflow` last. Must match the math
+ * crate's `BuybackBlocker` enum byte-for-byte.
  */
 export const BUYBACK_BLOCKER = {
   /** Less than `BUYBACK_COOLDOWN_SECS` since the previous successful trigger. */
   CooldownActive: 0,
-  /** Insurance fund balance is at or below the admin-set floor. */
-  BelowInsuranceFloor: 1,
-  /** One or more markets are paying haircut on positive PnL. */
+  /** The `BuybackTreasury` balance is at or below the hardcoded treasury floor. */
+  BelowTreasuryFloor: 1,
+  /** The market is paying a haircut on positive PnL — under stress, no buyback. */
   HaircutsActive: 2,
-  /** `market_exposure_q` is zero; no measurable risk for the ratio gate to weigh. */
-  ExposureBelowMinimum: 3,
-  /** `fund × DEN` < `exposure × NUM`; insurance under-collateralized for buyback. */
-  RatioBelowThreshold: 4,
+  /** The market is otherwise distressed and the buyback is auto-paused. */
+  AutoPausedUnderStress: 3,
+  /** A reserve-first staker top-up is owed / in flight; the buyback yields to it. */
+  ReserveTopUpPending: 4,
+  /** `market_exposure_q` is zero — the market has no live open interest. */
+  ExposureBelowMinimum: 5,
   /** A `checked_*` arithmetic op returned `None`; cross-cutting fail-closed bucket. */
-  MathOverflow: 5,
+  MathOverflow: 6,
 } as const;
 Object.freeze(BUYBACK_BLOCKER);
 
@@ -75,7 +75,7 @@ const NAME_BY_CODE: Readonly<Record<number, BuybackBlockerName>> = (() => {
 })();
 
 /**
- * Translate a `BuybackBlocker` discriminant code (0..=5 at this
+ * Translate a `BuybackBlocker` discriminant code (0..=6 at this
  * staging snapshot) to its variant name. Returns `null` for any code
  * outside the known range — caller decides whether to treat that as
  * an unrecognized future variant or a parser bug.
@@ -95,7 +95,7 @@ export function parseBuybackBlockerName(
 /**
  * Inverse of `parseBuybackBlockerName`: variant name → discriminant.
  * Useful for keepers that filter on variant strings (e.g. "ignore all
- * `CooldownActive`/`BelowInsuranceFloor` failures, alert on the rest").
+ * `CooldownActive`/`BelowTreasuryFloor` failures, alert on the rest").
  *
  * Returns `null` for any unrecognized name — the keys in
  * `BUYBACK_BLOCKER` are the exhaustive set.

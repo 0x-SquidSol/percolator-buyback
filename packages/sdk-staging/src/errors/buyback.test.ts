@@ -15,18 +15,19 @@ import {
 } from "./buyback.js";
 
 describe("BUYBACK_BLOCKER", () => {
-  it("exposes the six current variants in declaration order", () => {
+  it("exposes the seven current variants in canonical declaration order", () => {
     // Order MUST match the BuybackBlocker enum in
-    // crates/buyback-staging/src/buyback.rs. A diff here means the Rust
-    // enum was reordered or extended without a corresponding TS update —
-    // break the build until reconciled.
+    // crates/buyback-staging/src/buyback.rs (canonical order pinned in
+    // PROPOSAL.md §6.1 / INTEGRATION.md). A diff here means the Rust enum
+    // and this mirror have diverged — break the build until reconciled.
     expect(Object.entries(BUYBACK_BLOCKER)).toEqual([
       ["CooldownActive", 0],
-      ["BelowInsuranceFloor", 1],
+      ["BelowTreasuryFloor", 1],
       ["HaircutsActive", 2],
-      ["ExposureBelowMinimum", 3],
-      ["RatioBelowThreshold", 4],
-      ["MathOverflow", 5],
+      ["AutoPausedUnderStress", 3],
+      ["ReserveTopUpPending", 4],
+      ["ExposureBelowMinimum", 5],
+      ["MathOverflow", 6],
     ]);
   });
 
@@ -38,15 +39,16 @@ describe("BUYBACK_BLOCKER", () => {
 describe("parseBuybackBlockerName", () => {
   it("returns the variant name for each in-range code", () => {
     expect(parseBuybackBlockerName(0)).toBe("CooldownActive");
-    expect(parseBuybackBlockerName(1)).toBe("BelowInsuranceFloor");
+    expect(parseBuybackBlockerName(1)).toBe("BelowTreasuryFloor");
     expect(parseBuybackBlockerName(2)).toBe("HaircutsActive");
-    expect(parseBuybackBlockerName(3)).toBe("ExposureBelowMinimum");
-    expect(parseBuybackBlockerName(4)).toBe("RatioBelowThreshold");
-    expect(parseBuybackBlockerName(5)).toBe("MathOverflow");
+    expect(parseBuybackBlockerName(3)).toBe("AutoPausedUnderStress");
+    expect(parseBuybackBlockerName(4)).toBe("ReserveTopUpPending");
+    expect(parseBuybackBlockerName(5)).toBe("ExposureBelowMinimum");
+    expect(parseBuybackBlockerName(6)).toBe("MathOverflow");
   });
 
   it("returns null for codes outside the known range", () => {
-    expect(parseBuybackBlockerName(6)).toBeNull();
+    expect(parseBuybackBlockerName(7)).toBeNull();
     expect(parseBuybackBlockerName(255)).toBeNull();
     expect(parseBuybackBlockerName(-1)).toBeNull();
   });
@@ -61,11 +63,12 @@ describe("parseBuybackBlockerName", () => {
 describe("buybackBlockerCode", () => {
   it("returns the discriminant for each known name", () => {
     expect(buybackBlockerCode("CooldownActive")).toBe(0);
-    expect(buybackBlockerCode("BelowInsuranceFloor")).toBe(1);
+    expect(buybackBlockerCode("BelowTreasuryFloor")).toBe(1);
     expect(buybackBlockerCode("HaircutsActive")).toBe(2);
-    expect(buybackBlockerCode("ExposureBelowMinimum")).toBe(3);
-    expect(buybackBlockerCode("RatioBelowThreshold")).toBe(4);
-    expect(buybackBlockerCode("MathOverflow")).toBe(5);
+    expect(buybackBlockerCode("AutoPausedUnderStress")).toBe(3);
+    expect(buybackBlockerCode("ReserveTopUpPending")).toBe(4);
+    expect(buybackBlockerCode("ExposureBelowMinimum")).toBe(5);
+    expect(buybackBlockerCode("MathOverflow")).toBe(6);
   });
 
   it("returns null for unknown names", () => {
