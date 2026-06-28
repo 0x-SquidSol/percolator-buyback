@@ -63,10 +63,10 @@ A buyback fires for a market only when **all** of these conditions are simultane
 ### 2.5 Exposure precondition — `market_exposure > 0`
 
 - The buyback only fires on a market with live open interest. A market with zero exposure is not a real, traded market, and there is no reason to spend its treasury on liquidity for a token nobody is trading yet.
-- The handler requires a non-zero exposure, returning `ExposureBelowMinimum` otherwise. Exposure also feeds the indexer and any size/health checks, but it is no longer part of a solvency ratio.
+- The handler requires a non-zero exposure, returning `ExposureBelowMinimum` otherwise. Exposure also feeds the indexer and the health surface, but it does **not** size the slice (a flat bps of the treasury — §5.1) and is no longer part of a solvency ratio.
 - This matters most for a newly launched market: it must accrue real open interest before its treasury is spent.
 
-The gates are ordered cheap-to-expensive in the handler: cooldown and treasury floor are scalar reads, stress is a single function call, the exposure precondition closes out the exposure read, and the reserve-first step runs last (it can move tokens). Short-circuit on the first failure. The keeper benefits from the same ordering when probing eligibility off-chain.
+In the handler the reserve-first step (§2.1) runs first — it credits stakers and sets the remainder the rest of the gate sees — and the remaining economic gates then run cheap-to-expensive: cooldown and treasury floor are scalar reads, stress is a single function call, and the exposure precondition closes out the exposure read. Short-circuit on the first failure. The keeper benefits from the same ordering when probing eligibility off-chain.
 
 ## 3. The Formula
 
@@ -98,7 +98,7 @@ Each market is evaluated independently against its own treasury and its own `mar
 
 ### 3.3 No solvency ratio
 
-The original design gated on `insurance_fund_balance / market_exposure ≥ 1.5`. That is **removed**: the buyback no longer reads the insurance fund, so there is no solvency ratio to compute. `market_exposure` survives only as (a) the non-zero-exposure precondition (§2.5) and (b) an input to slice sizing / health and the indexer. The `BUYBACK_RATIO_THRESHOLD` constant and the `BelowInsuranceFloor` / `RatioBelowThreshold` block reasons are dropped (see §4 and the design spec §8).
+The original design gated on `insurance_fund_balance / market_exposure ≥ 1.5`. That is **removed**: the buyback no longer reads the insurance fund, so there is no solvency ratio to compute. `market_exposure` survives only as (a) the non-zero-exposure precondition (§2.5) and (b) an input to the health surface and the indexer — the slice itself is a flat bps of the treasury, not a function of exposure. The `BUYBACK_RATIO_THRESHOLD` constant and the `BelowInsuranceFloor` / `RatioBelowThreshold` block reasons are dropped (see §4 and the design spec §8).
 
 ## 4. Constants
 
@@ -140,7 +140,7 @@ Reads the treasury's reserved slice, executes the following sequence against the
 
 Verifies that:
 - The supplied LP token mint matches the market's bound LP mint.
-- The reported `lp_burned_amount` was actually destroyed (Anchor account constraints check the LP token account is now empty or that the burn was atomic with the call).
+- The reported `lp_burned_amount` was actually destroyed (the handler's account checks confirm the LP token account is now empty, or that the burn was atomic with the call).
 - The treasury's reserved slice is fully consumed after settlement.
 
 Then emits `LiquidityLocked` with the slice, pair acquired, token bought, pair paired, `lp_tokens_burned`, the token mint and pool pubkey, and the realized buy price. Closes the loop.
@@ -162,10 +162,10 @@ This section covers the math gate, the funding setup, the stake-program handler,
 
 ### 6.1 `percolator` (math gate)
 
-- Helper: `market_exposure(market: MarketView) -> Result<u128, BuybackBlocker>`. Applies the per-market formula in section 3.1 to a single market's view; checked arithmetic, `Err(MathOverflow)` on overflow. Unchanged — it now feeds the non-zero-exposure precondition and slice sizing, not a solvency ratio.
+- Helper: `market_exposure(market: MarketView) -> Result<u128, BuybackBlocker>`. Applies the per-market formula in section 3.1 to a single market's view; checked arithmetic, `Err(MathOverflow)` on overflow. Unchanged — it now feeds the non-zero-exposure precondition and the indexer/health surface, not slice sizing or a solvency ratio (the slice is a flat bps of the treasury).
 - Helper: `buyback_eligible(treasury_balance, exposure, last_buyback_ts, now, haircut_active, treasury_floor) -> Result<u64, BuybackBlocker>`. Runs the gates (cooldown, treasury floor, non-zero exposure, no-haircut) and returns either the slice size (bps of treasury, clamped to the floor) or the failing condition. Pure, no I/O. The reserve-first step (§2.1) runs in the handler, before this.
 - Constants module entries for the section-4 values (`BUYBACK_PER_EVENT_BPS`, `BUYBACK_COOLDOWN_SECS`, `BUYBACK_TREASURY_FLOOR`).
-- `BuybackBlocker` enum: `CooldownActive`, `HaircutsActive`, `ExposureBelowMinimum`, `MathOverflow`, plus the new `BelowTreasuryFloor`, `AutoPausedUnderStress`, `ReserveTopUpPending`. The original `BelowInsuranceFloor` / `RatioBelowThreshold` variants are **dropped** (no insurance read).
+- `BuybackBlocker` enum, in canonical declaration order (gate-evaluation sequence, `MathOverflow` last as the cross-cutting fail-closed bucket): `CooldownActive`, `BelowTreasuryFloor`, `HaircutsActive`, `AutoPausedUnderStress`, `ReserveTopUpPending`, `ExposureBelowMinimum`, `MathOverflow`. The original `BelowInsuranceFloor` / `RatioBelowThreshold` variants are **dropped** (no insurance read). This order is load-bearing — the SDK error map and the on-chain enum must match it byte-for-byte.
 - Unit tests cover the boundaries: cooldown at exactly 24h, treasury at exactly the floor, exposure exactly 0, slice rounding to 0.
 
 ### 6.2 `percolator-stake` (funding, treasury, handler)
@@ -188,7 +188,7 @@ This section covers the math gate, the funding setup, the stake-program handler,
 - Each leg of the cranker sequence has its own slippage bound. If any leg exceeds its bound, the cranker aborts and surfaces an error. The trigger has already happened on-chain; the slice will sit in the pool until a successful round-trip clears it.
 - The cranker reads each market's bound pool and assumes it is initialized, aborting cleanly if not. The AMM's add-liquidity instruction layout is the integration's load-bearing dependency — see section 11.
 
-### 6.4 `percolator-indexer` (optional, recommended)
+### 6.4 `percolator-indexer` (required at T+0)
 
 - Decode `BuybackTriggered` and `LiquidityLocked`. Surface a "buybacks" feed.
 - Useful columns: timestamp, market, token mint, slice, reserve top-up, exposure at trigger, token bought, pair paired, LP tokens burned, realized buy price.
@@ -217,7 +217,7 @@ This section covers the math gate, the funding setup, the stake-program handler,
 
 ### 7.4 Why these conditions and not more
 
-- The gates each guard a distinct failure mode: under-collateralization (ratio), drain rate (cooldown), absolute floor breach (floor), active stress (haircut), and no-measurable-risk (exposure precondition). Removing any one re-opens a specific failure mode.
+- The gates each guard a distinct failure mode: drain rate (cooldown), treasury-floor breach (floor), active stress (haircut), no-measurable-risk (exposure precondition), and staker exposure on a market loss (reserve-first). Removing any one re-opens a specific failure mode.
 - Adding a discretionary gate — e.g., a price-based gate, a volume gate, a circulating-supply gate — moves the system away from "buy when the fund is structurally surplus" toward "buy when conditions look right by some discretionary measure." That is the slope toward governance.
 - These gates can all be evaluated from on-chain state alone, with no off-chain inputs beyond the oracle the protocol already trusts. This matters: the autonomy property fails the moment a gate depends on a value that requires off-chain attestation.
 
@@ -252,7 +252,7 @@ A buyback that meets these points has nowhere to hide a discretionary override �
 What goes wrong, and what stops it from compounding:
 
 - **Stuck cranker.** Trigger fires, the slice sits reserved in the treasury, no cranker picks it up. Mitigation: the cranker is permissionless (anyone can settle) and `emergency_drain_treasury` returns a stranded slice. A stuck slice is a protocol problem, never a staker one — insurance is never involved.
-- **Oracle desync.** Exposure no longer gates a solvency ratio — it feeds only the non-zero precondition and slice sizing — so a bad oracle cannot trigger an over-large insurance withdrawal (there is none). Worst case it skews the slice size within the per-event cap or mis-fires the exposure precondition; the cooldown bounds compounding and the haircut gate halts buybacks while the market is genuinely stressed.
+- **Oracle desync.** Exposure no longer gates a solvency ratio and does not size the slice (a flat bps of the treasury) — it feeds only the non-zero precondition and observability — so a bad oracle cannot trigger an over-large or insurance-backed withdrawal (there is none). Worst case it mis-fires the exposure precondition (blocking, or allowing, a buyback on a zero/non-zero read); the cooldown bounds compounding and the haircut gate halts buybacks while the market is genuinely stressed.
 - **Sandwich on the cranker round-trip.** A searcher front-runs the buy leg, the LP-add leg, or both. Mitigation: per-leg slippage bounds enforced by the keeper, the 24h cooldown that makes the schedule too irregular to systematically front-run, and the deepening of the locked pool itself (each event makes the pool harder to sandwich than the last).
 - **Impermanent loss against locked liquidity.** The token moves significantly against the pair asset after liquidity is locked. The locked pool rebalances mechanically — if the token appreciates, the pool ends up holding more of the pair asset and less of the token than at deposit. This is not a bug; it is the standard AMM cost. The economic effect is "the protocol effectively sold some of the token into strength via the LP," which is acceptable since the slice was protocol-funded surplus to begin with.
 - **Concurrent triggers.** Two crankers race to call `trigger_buyback`. Mitigation: atomic update of `last_buyback_ts` inside the handler — one wins, the other gets `CooldownActive`. Standard Solana account-write semantics handle this.
