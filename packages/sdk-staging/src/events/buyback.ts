@@ -101,26 +101,20 @@ export interface BuybackTriggered {
   timestamp: bigint;
   /** The market's bound buyback token mint. */
   tokenMint: PublicKey;
-  /** Market insurance fund balance pre-withdrawal (collateral base units). */
-  fundBalanceBefore: bigint;
-  /** Amount withdrawn into the buyback pool (collateral base units). */
+  /** `BuybackTreasury` balance before this event (collateral base units). */
+  treasuryBalanceBefore: bigint;
+  /** Amount credited to stakers by the reserve-first step (collateral base units). */
+  reserveTopup: bigint;
+  /** Amount reserved for the round-trip (collateral base units). */
   slice: bigint;
-  /** Q-format exposure used in the ratio gate (this market's exposure). */
+  /** Q-format exposure at trigger (this market's exposure; observability only). */
   marketExposure: bigint;
-  /**
-   * `fund × 10_000 / exposure` in basis points; `u64::MAX`
-   * (`18446744073709551615n`) when exposure was 0. Use
-   * {@link isRatioBpsSentinel} to test for the sentinel — naive
-   * arithmetic on the raw value will produce visibly nonsensical
-   * results (~1.8e15 bps).
-   */
-  ratioBps: bigint;
-  /** Destination ATA receiving the slice. */
-  buybackPool: PublicKey;
+  /** The `BuybackTreasury` account holding the reserved slice. */
+  buybackTreasury: PublicKey;
 }
 
 /** Wire size of `BuybackTriggered`'s data section (no envelope). */
-export const BUYBACK_TRIGGERED_BYTE_LENGTH = 8 + 32 + 8 + 8 + 16 + 8 + 32;
+export const BUYBACK_TRIGGERED_BYTE_LENGTH = 8 + 32 + 8 + 8 + 8 + 16 + 32;
 
 /**
  * Decode a `BuybackTriggered` event from its already-extracted data
@@ -132,19 +126,19 @@ export function decodeBuybackTriggered(data: Uint8Array): BuybackTriggered {
   const c = new Cursor(data);
   const timestamp = c.readI64();
   const tokenMint = c.readPubkey();
-  const fundBalanceBefore = c.readU64();
+  const treasuryBalanceBefore = c.readU64();
+  const reserveTopup = c.readU64();
   const slice = c.readU64();
   const marketExposure = c.readU128();
-  const ratioBps = c.readU64();
-  const buybackPool = c.readPubkey();
+  const buybackTreasury = c.readPubkey();
   return {
     timestamp,
     tokenMint,
-    fundBalanceBefore,
+    treasuryBalanceBefore,
+    reserveTopup,
     slice,
     marketExposure,
-    ratioBps,
-    buybackPool,
+    buybackTreasury,
   };
 }
 
@@ -216,28 +210,15 @@ export function decodeLiquidityLocked(data: Uint8Array): LiquidityLocked {
 // Sentinel predicates
 // ═══════════════════════════════════════════════════════════════
 //
-// On-chain `trigger_buyback` and `settle_buyback` saturate two ratio
-// fields when their denominator is 0, rather than emitting a
-// divide-by-zero. Consumers that aggregate or display these fields
-// must treat the sentinel as "no meaningful ratio for this event",
-// not as a real measurement — `Number(b) / 10_000` on the sentinel
-// produces ~1.8e15 / 3.4e38 and silently corrupts averages and
-// dashboards. Use the predicates below to branch.
-
-/** Sentinel value emitted in `BuybackTriggered.ratioBps` when exposure was 0. */
-export const RATIO_BPS_SENTINEL: bigint = 0xffff_ffff_ffff_ffffn;
+// On-chain `settle_buyback` saturates `LiquidityLocked.realizedTokenPerPair`
+// to `u128::MAX` when `pair_paired` is 0, rather than emitting a
+// divide-by-zero. Consumers that aggregate or display the field must treat
+// the sentinel as "no meaningful ratio for this event", not as a real
+// measurement — `Number(b)` on the sentinel produces ~3.4e38 and silently
+// corrupts averages and dashboards. Use the predicate below to branch.
 
 /** Sentinel value emitted in `LiquidityLocked.realizedTokenPerPair` when pair_paired was 0. */
 export const REALIZED_TOKEN_PER_PAIR_SENTINEL: bigint = (1n << 128n) - 1n;
-
-/**
- * True when `ratioBps` carries the divide-by-zero sentinel
- * ({@link RATIO_BPS_SENTINEL}, i.e. on-chain `market_exposure`
- * was 0). Returns false for any real value, including u64::MAX-1.
- */
-export function isRatioBpsSentinel(ratioBps: bigint): boolean {
-  return ratioBps === RATIO_BPS_SENTINEL;
-}
 
 /**
  * True when `realizedTokenPerPair` carries the divide-by-zero sentinel
