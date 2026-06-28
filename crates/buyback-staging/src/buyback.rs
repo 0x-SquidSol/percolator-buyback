@@ -53,11 +53,13 @@ const _: () = assert!(BPS_DENOMINATOR > 0);
 /// enum (vs. string errors) lets callers distinguish steady-state cooldown
 /// from anomalous gate failures without parsing.
 ///
-/// Variants are ordered to match the runtime evaluation sequence: the
-/// economic gates run cheap-to-expensive inside [`buyback_eligible`].
-/// `MathOverflow` sits last by convention because it is a cross-cutting
-/// fail-closed bucket that any `checked_*` site can fire from, not a
-/// sequenced gate.
+/// Variants are in the canonical declaration order pinned by INTEGRATION.md
+/// and PROPOSAL.md §6.1: the economic gates [`buyback_eligible`] evaluates
+/// (cooldown, treasury floor, stress) followed by the handler-level blockers
+/// (auto-pause, reserve top-up) and the exposure precondition. `MathOverflow`
+/// sits last by convention because it is a cross-cutting fail-closed bucket
+/// that any `checked_*` site can fire from, not a sequenced gate. This order
+/// is load-bearing — the SDK error map and the on-chain enum must match it.
 ///
 /// The numeric discriminants are NOT frozen yet. They become append-only
 /// — never reorder, never remove — only once this enum lands on-chain and
@@ -76,6 +78,17 @@ pub enum BuybackBlocker {
     /// The target market is currently paying haircut on positive PnL,
     /// indicating that market is in a stressed regime.
     HaircutsActive,
+    /// The market is under stress and the buyback is auto-paused: the fee
+    /// accrues to the staker reserve instead of a buyback. Returned by the
+    /// handler's health check (PROPOSAL.md §2.4), not by [`buyback_eligible`],
+    /// which sees only the per-market haircut flag.
+    AutoPausedUnderStress,
+    /// The market carries an outstanding insurance loss, so the reserve-first
+    /// step (PROPOSAL.md §2.1) credits stakers toward the reserve target and
+    /// consumes the eligible amount before any buyback. Returned by the
+    /// handler, which performs the token-moving top-up; [`buyback_eligible`]
+    /// is pure and never returns it.
+    ReserveTopUpPending,
     /// `market_exposure_q` is zero — the market has no live open interest,
     /// so it is not a real traded market and the buyback does not fire on
     /// it. (A non-zero magnitude floor, where desired, is enforced by the
@@ -279,6 +292,21 @@ mod tests {
     #[test]
     fn per_event_bps_is_10() {
         assert_eq!(BUYBACK_PER_EVENT_BPS, 10);
+    }
+
+    /// Locks the canonical `BuybackBlocker` discriminant order. This order is
+    /// load-bearing: the SDK error map (`errors/buyback.ts`) and the on-chain
+    /// enum pin these codes, so a reorder here is a breaking change. See
+    /// INTEGRATION.md §1 / PROPOSAL.md §6.1.
+    #[test]
+    fn blocker_discriminant_order_is_canonical() {
+        assert_eq!(BuybackBlocker::CooldownActive as u8, 0);
+        assert_eq!(BuybackBlocker::BelowTreasuryFloor as u8, 1);
+        assert_eq!(BuybackBlocker::HaircutsActive as u8, 2);
+        assert_eq!(BuybackBlocker::AutoPausedUnderStress as u8, 3);
+        assert_eq!(BuybackBlocker::ReserveTopUpPending as u8, 4);
+        assert_eq!(BuybackBlocker::ExposureBelowMinimum as u8, 5);
+        assert_eq!(BuybackBlocker::MathOverflow as u8, 6);
     }
 
     fn sample_market(long: u128, short: u128, price: u128, bps: u64) -> MarketView {
