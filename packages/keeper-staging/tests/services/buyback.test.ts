@@ -58,13 +58,13 @@ describe("probeEligibility", () => {
     }
   });
 
-  it("classifies an Anchor-named blocker log as blocked and logs at info", async () => {
+  it("classifies a native Custom(28) error as blocked (base of the buyback block)", async () => {
+    // Custom(28) = BUYBACK_ERROR_BASE + 0 → BuybackBlocker discriminant 0 →
+    // "CooldownActive". Read from `err`; logs are empty on purpose to prove the
+    // blocker is sourced from the structured error, not scraped from logs.
     const conn = mockConnection({
-      err: { InstructionError: [0, { Custom: 6000 }] },
-      logs: [
-        "Program log: Instruction: StakeTriggerBuyback",
-        "Program log: AnchorError occurred. Error Code: CooldownActive. Error Number: 6000.",
-      ],
+      err: { InstructionError: [0, { Custom: 28 }] },
+      logs: [],
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
@@ -82,14 +82,12 @@ describe("probeEligibility", () => {
     }
   });
 
-  it("classifies a numeric Custom-code blocker log as blocked", async () => {
-    // 0x1771 = 6001 → BuybackBlocker discriminant 1 → "BelowTreasuryFloor".
+  it("classifies a native Custom(29) error as blocked (base + discriminant)", async () => {
+    // Custom(29) = BUYBACK_ERROR_BASE + 1 → BuybackBlocker discriminant 1 →
+    // "BelowTreasuryFloor".
     const conn = mockConnection({
-      err: { InstructionError: [0, { Custom: 6001 }] },
-      logs: [
-        "Program log: Instruction: StakeTriggerBuyback",
-        "Program log: Custom error code: 0x1771",
-      ],
+      err: { InstructionError: [0, { Custom: 29 }] },
+      logs: [],
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
@@ -98,6 +96,24 @@ describe("probeEligibility", () => {
         outcome: "blocked",
         blocker: "BelowTreasuryFloor",
       });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does NOT classify a non-buyback Custom code as blocked", async () => {
+    // Custom(24) is an existing StakeError below the 28..34 buyback block:
+    // 24 - 28 = -4 → parseBuybackBlockerName(-4) → null, so it is not a
+    // blocker. It is a structured Custom error (not a not-live string tag), so
+    // it falls through to rpc-error rather than being mislabeled "blocked".
+    const conn = mockConnection({
+      err: { InstructionError: [0, { Custom: 24 }] },
+      logs: [],
+    });
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await probeEligibility(conn, SLAB, PAYER);
+      expect(result.outcome).toBe("rpc-error");
     } finally {
       spy.mockRestore();
     }

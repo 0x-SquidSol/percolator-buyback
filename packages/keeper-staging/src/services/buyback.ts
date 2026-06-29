@@ -126,44 +126,49 @@ function buildStakeTriggerBuybackIxStub(
 }
 
 /**
- * Walk the simulation logs for a `BuybackBlocker` variant name. Anchor
- * programs surface user errors in two shapes — both are checked:
- *
- *   - `Program log: AnchorError ... Error Code: <Name>. ...`
- *   - `Program log: Custom error code: 0x<hex>` (where the hex value,
- *     minus Anchor's `0x1770` (= 6000) base offset, is the
- *     `BuybackBlocker` discriminant).
- *
- * Returns `null` when no recognizable variant is present. The caller
- * then treats the response as a non-blocker failure (rpc-error or
- * not-live) rather than misclassifying it as `blocked` with no name.
- *
- * **OPEN DEPENDENCY — the Anchor framing is provisional.** The
- * destination `dcccrypto/percolator-stake` is a NATIVE program: its
- * existing errors are `ProgramError::Custom(n)` with 0-based
- * discriminants (no Anchor `0x1770` / 6000 offset) and its diagnostics
- * are plain `msg!` strings, not `AnchorError` log lines. The buyback
- * handler has not landed yet, so its on-chain error surface is undecided.
- * Both branches below (the `Error Code:` name match and the `- 6000`
- * numeric path) assume an Anchor-style surface and are pinned only by
- * this staging suite's fixtures. When the handler defines its real error
- * encoding, revisit this parser: if it follows the native `StakeError`
- * convention, drop the `- 6000` offset and read the codes 0-based, and
- * source the custom code from the transaction `err` field rather than the
- * program logs.
+ * On-chain `Custom`-error base for the buyback gate failures. The destination
+ * `dcccrypto/percolator-stake` is a NATIVE program: `trigger_buyback` surfaces
+ * a `BuybackBlocker` as a `StakeError::Buyback*` variant, which serialize to
+ * `ProgramError::Custom(28..34)` — the next-free `StakeError` block after the
+ * existing `0..27`. This base is NOT the math crate's `0..6` `BuybackBlocker`
+ * discriminants and NOT an Anchor `0x1770` / 6000 offset. It is pinned, with a
+ * compile-time lock, by `src/error.rs` in `dcccrypto/percolator-stake` (a
+ * reorder there fails its build); this constant is the off-chain mirror.
  */
-function extractBlocker(logs: readonly string[]): string | null {
-  for (const line of logs) {
-    const named = line.match(/Error Code: (\w+)\b/);
-    if (named !== null) return named[1] ?? null;
-    const numeric = line.match(/Custom error code:?\s*0x([0-9a-fA-F]+)/);
-    if (numeric !== null) {
-      const code = parseInt(numeric[1] ?? "", 16) - 6000;
-      const name = parseBuybackBlockerName(code);
-      if (name !== null) return name;
-    }
-  }
-  return null;
+const BUYBACK_ERROR_BASE = 28;
+
+/**
+ * Extract the on-chain `BuybackBlocker` variant name from a failed
+ * `simulateTransaction` `err`, or `null` when the failure is not a buyback gate
+ * rejection.
+ *
+ * Reads the structured `InstructionError` `Custom` code — authoritative for a
+ * native program — rather than scraping program logs: a gate rejection is
+ * `Custom(BUYBACK_ERROR_BASE + discriminant)`, so the discriminant is
+ * `code - BUYBACK_ERROR_BASE`, resolved to its name by the SDK's order-locked
+ * `parseBuybackBlockerName`, which returns `null` for any code outside the
+ * canonical `0..6` (i.e. any non-buyback `StakeError`, which then falls through
+ * to the not-live / rpc-error branches).
+ */
+function extractBlocker(err: unknown): string | null {
+  const code = customErrorCode(err);
+  if (code === null) return null;
+  return parseBuybackBlockerName(code - BUYBACK_ERROR_BASE);
+}
+
+/**
+ * Read `err.InstructionError[1].Custom` as a number, or `null` when the error
+ * is not a structured `Custom` program error (a string-form `InstructionError`
+ * variant, or any non-object RPC fault).
+ */
+function customErrorCode(err: unknown): number | null {
+  if (typeof err !== "object" || err === null) return null;
+  const ie = (err as Record<string, unknown>)["InstructionError"];
+  if (!Array.isArray(ie) || ie.length !== 2) return null;
+  const variant = ie[1];
+  if (typeof variant !== "object" || variant === null) return null;
+  const custom = (variant as Record<string, unknown>)["Custom"];
+  return typeof custom === "number" ? custom : null;
 }
 
 /**
@@ -201,7 +206,7 @@ function classifySim(sim: SimulatedTransactionResponse): EligibilityResult {
   if (sim.err === null) {
     return { outcome: "would-fire", slice: "0" };
   }
-  const blocker = extractBlocker(sim.logs ?? []);
+  const blocker = extractBlocker(sim.err);
   if (blocker !== null) {
     return { outcome: "blocked", blocker };
   }
