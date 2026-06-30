@@ -19,7 +19,11 @@ import {
   encodeStakeSettleBuyback,
   encodeStakeEmergencyDrainTreasury,
   decodeBuybackConfig,
+  decodeBuybackConfigAccount,
   BUYBACK_CONFIG_BYTE_LENGTH,
+  BUYBACK_CONFIG_ACCOUNT_SIZE,
+  BUYBACK_CONFIG_HEADER_LEN,
+  BUYBACK_CONFIG_DISCRIMINATOR,
 } from "./stake-buyback.js";
 
 // Fixed pubkeys for reproducible PDA derivation tests. Programmatically
@@ -311,5 +315,69 @@ describe("decodeBuybackConfig", () => {
     expect(cfg.tokenMint.toBase58()).toBe(TOKEN.toBase58());
     expect(cfg.ammProgramId.toBase58()).toBe(AMM.toBase58());
     expect(Array.from(cfg.ammProgramDataSha256)).toEqual(Array.from(SHA));
+  });
+});
+
+describe("decodeBuybackConfigAccount (full 264-byte account)", () => {
+  const TOKEN = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const POOL = new PublicKey("So11111111111111111111111111111111111111112");
+  const LP_MINT = new PublicKey("DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F");
+  const PAIR = new PublicKey("11111111111111111111111111111111");
+  const AMM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+  const SHA = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
+
+  // Build a full account: 8-byte header, binding [8..200], _reserved [200..264]
+  // with the discriminator at [200..208] and version at [208].
+  function accountData(
+    opts: { initialized?: boolean; goodDisc?: boolean } = {},
+  ): Uint8Array {
+    const { initialized = true, goodDisc = true } = opts;
+    const out = new Uint8Array(BUYBACK_CONFIG_ACCOUNT_SIZE);
+    if (initialized) out[0] = 1; // is_initialized
+    out[1] = 254; // bump
+    out.set(TOKEN.toBytes(), BUYBACK_CONFIG_HEADER_LEN + 0);
+    out.set(POOL.toBytes(), BUYBACK_CONFIG_HEADER_LEN + 32);
+    out.set(LP_MINT.toBytes(), BUYBACK_CONFIG_HEADER_LEN + 64);
+    out.set(PAIR.toBytes(), BUYBACK_CONFIG_HEADER_LEN + 96);
+    out.set(AMM.toBytes(), BUYBACK_CONFIG_HEADER_LEN + 128);
+    out.set(SHA, BUYBACK_CONFIG_HEADER_LEN + 160);
+    if (goodDisc) out.set(BUYBACK_CONFIG_DISCRIMINATOR, 200);
+    out[208] = 1; // version
+    return out;
+  }
+
+  it("decodes the binding from a valid full account", () => {
+    const cfg = decodeBuybackConfigAccount(accountData());
+    if (cfg === null) throw new Error("expected a decoded config");
+    expect(cfg.tokenMint.toBase58()).toBe(TOKEN.toBase58());
+    expect(cfg.pool.toBase58()).toBe(POOL.toBase58());
+    expect(cfg.lpMint.toBase58()).toBe(LP_MINT.toBase58());
+    expect(cfg.pairMint.toBase58()).toBe(PAIR.toBase58());
+    expect(cfg.ammProgramId.toBase58()).toBe(AMM.toBase58());
+    expect(Array.from(cfg.ammProgramDataSha256)).toEqual(Array.from(SHA));
+  });
+
+  it("returns null for a zeroed (unbound) account", () => {
+    expect(
+      decodeBuybackConfigAccount(new Uint8Array(BUYBACK_CONFIG_ACCOUNT_SIZE)),
+    ).toBeNull();
+  });
+
+  it("returns null when is_initialized != 1", () => {
+    expect(decodeBuybackConfigAccount(accountData({ initialized: false }))).toBeNull();
+  });
+
+  it("returns null on a discriminator mismatch (wrong-type hardening)", () => {
+    expect(decodeBuybackConfigAccount(accountData({ goodDisc: false }))).toBeNull();
+  });
+
+  it("returns null on the wrong account size", () => {
+    expect(decodeBuybackConfigAccount(new Uint8Array(263))).toBeNull();
+    expect(decodeBuybackConfigAccount(new Uint8Array(265))).toBeNull();
+  });
+
+  it("pins the documented header length and account size", () => {
+    expect(BUYBACK_CONFIG_HEADER_LEN).toBe(8);
+    expect(BUYBACK_CONFIG_ACCOUNT_SIZE).toBe(264);
   });
 });

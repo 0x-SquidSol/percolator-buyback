@@ -282,12 +282,13 @@ export interface BuybackConfig {
 }
 
 /**
- * Wire size of the `BuybackConfig` data section — five pubkeys + one
- * 32-byte hash. PROVISIONAL: the on-chain struct authored in the matching
- * `percolator-stake` PR is the source of truth. If that struct prepends a
- * bump or an account-type tag, the caller strips it (or the offsets are
- * reconciled) at transfer; this decoder reads the documented binding
- * fields only.
+ * Wire size of the `BuybackConfig` **binding section** — six 32-byte fields
+ * (five pubkeys + the 32-byte AMM sha pin). This decodes the binding only; the
+ * full on-chain account (frozen at {@link BUYBACK_CONFIG_ACCOUNT_SIZE} bytes in
+ * `percolator-stake` `state.rs`) wraps this section in the house idiom header +
+ * a trailing `_reserved`. Use {@link decodeBuybackConfigAccount} to decode a
+ * full account buffer — it slices this section out and validates the account
+ * type first.
  */
 export const BUYBACK_CONFIG_BYTE_LENGTH = 32 * 6;
 
@@ -312,4 +313,55 @@ export function decodeBuybackConfig(data: Uint8Array): BuybackConfig {
     ammProgramId: new PublicKey(data.slice(128, 160)),
     ammProgramDataSha256: data.slice(160, 192),
   };
+}
+
+/** Full on-chain size of the `BuybackConfig` account (frozen, percolator-stake `state.rs`). */
+export const BUYBACK_CONFIG_ACCOUNT_SIZE = 264;
+
+/**
+ * Byte offset of the binding block within a full `BuybackConfig` account. The
+ * frozen on-chain struct leads with the house idiom header —
+ * `is_initialized`(1) + `bump`(1) + `_padding`(6) = 8 — so the six binding
+ * fields occupy `[8..200]`, and the trailing `_reserved`(64) carries the
+ * discriminator at `[200..208]` and the version at `[208]`.
+ */
+export const BUYBACK_CONFIG_HEADER_LEN = 8;
+
+/** Account-type discriminator stamped in `BuybackConfig._reserved[0..8]` ("BBCF_V1\0"). */
+export const BUYBACK_CONFIG_DISCRIMINATOR: Uint8Array = new Uint8Array([
+  0x42, 0x42, 0x43, 0x46, 0x5f, 0x56, 0x31, 0x00,
+]);
+
+/**
+ * Decode a **full** `BuybackConfig` account buffer (as returned by
+ * `getAccountInfo(...).data`), validating the account type before trusting the
+ * binding. Returns `null` when the buffer is not an initialized BuybackConfig:
+ * wrong size, `is_initialized != 1`, or a discriminator mismatch — which
+ * includes a freshly-allocated all-zero account, mirroring the on-chain
+ * `validate_discriminator` hardening. On success, delegates to
+ * {@link decodeBuybackConfig} for the binding fields.
+ */
+export function decodeBuybackConfigAccount(
+  data: Uint8Array,
+): BuybackConfig | null {
+  if (data.length !== BUYBACK_CONFIG_ACCOUNT_SIZE) return null;
+  if (data[0] !== 1) return null; // is_initialized
+  if (!bytesEqual(data.slice(200, 208), BUYBACK_CONFIG_DISCRIMINATOR)) {
+    return null;
+  }
+  return decodeBuybackConfig(
+    data.slice(
+      BUYBACK_CONFIG_HEADER_LEN,
+      BUYBACK_CONFIG_HEADER_LEN + BUYBACK_CONFIG_BYTE_LENGTH,
+    ),
+  );
+}
+
+/** Byte-array equality (length + content). */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
