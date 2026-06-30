@@ -340,6 +340,10 @@ export const BUYBACK_CONFIG_DISCRIMINATOR: Uint8Array = new Uint8Array([
  * includes a freshly-allocated all-zero account, mirroring the on-chain
  * `validate_discriminator` hardening. On success, delegates to
  * {@link decodeBuybackConfig} for the binding fields.
+ *
+ * This validates the account's self-declared type, not its OWNER: the caller
+ * must confirm `accountInfo.owner` is the stake program before trusting a
+ * decode. The on-chain program enforces ownership; a raw-bytes decoder cannot.
  */
 export function decodeBuybackConfigAccount(
   data: Uint8Array,
@@ -405,6 +409,9 @@ export interface BuybackState {
  * freshly-allocated all-zero account, mirroring the on-chain
  * `validate_discriminator` hardening. Byte-offset safe (decodes from a
  * sub-array view of a larger buffer).
+ *
+ * Validates the account's self-declared type, not its OWNER: the caller must
+ * confirm `accountInfo.owner` is the stake program before trusting a decode.
  */
 export function decodeBuybackState(data: Uint8Array): BuybackState | null {
   if (data.length !== BUYBACK_STATE_ACCOUNT_SIZE) return null;
