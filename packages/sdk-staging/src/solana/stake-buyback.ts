@@ -357,6 +357,80 @@ export function decodeBuybackConfigAccount(
   );
 }
 
+/** Full on-chain size of the `BuybackState` account (frozen, percolator-stake `state.rs`). */
+export const BUYBACK_STATE_ACCOUNT_SIZE = 304;
+
+/** Entries in `BuybackState.settled_id_ring`. */
+export const SETTLED_ID_RING_LEN = 16;
+
+/** Account-type discriminator stamped in `BuybackState._reserved[0..8]` ("BBST_V1\0"). */
+export const BUYBACK_STATE_DISCRIMINATOR: Uint8Array = new Uint8Array([
+  0x42, 0x42, 0x53, 0x54, 0x5f, 0x56, 0x31, 0x00,
+]);
+
+/**
+ * Decoded `BuybackState` account — per-market buyback bookkeeping. Field order
+ * and offsets match percolator-stake `state.rs` (frozen at 304 bytes):
+ * `is_initialized`(0), `bump`(1), `settle_disabled`(2), `_padding[5]`(3),
+ * `last_buyback_ts:i64`(8), `buyback_count:u64`(16), `drain_this_year:u64`(24),
+ * `last_year_reset_ts:i64`(32), `settled_id_ring:[u64;16]`(40),
+ * `settled_id_head:u64`(168), `_reserved[128]`(176) — discriminator at
+ * `[176..184]`, version at `[184]`.
+ */
+export interface BuybackState {
+  /** Bump seed for the buyback-state PDA. */
+  bump: number;
+  /** Emergency kill switch — when true, trigger is inert and drain is callable. */
+  settleDisabled: boolean;
+  /** Clock `unix_timestamp` of the last successful trigger (the cooldown anchor). */
+  lastBuybackTs: bigint;
+  /** Lifetime count of successful triggers. */
+  buybackCount: bigint;
+  /** Collateral reserved for buybacks in the current 365-day window. */
+  drainThisYear: bigint;
+  /** Clock `unix_timestamp` when `drainThisYear` was last reset. */
+  lastYearResetTs: bigint;
+  /** Ring buffer of recently-settled `round_trip_id`s (length {@link SETTLED_ID_RING_LEN}). */
+  settledIdRing: bigint[];
+  /** Next write index into `settledIdRing`. */
+  settledIdHead: bigint;
+  /** Struct version byte (`_reserved[8]`). */
+  version: number;
+}
+
+/**
+ * Decode a full `BuybackState` account buffer (as returned by
+ * `getAccountInfo(...).data`), validating the account type first. Returns
+ * `null` for a non-initialized / wrong-type / wrong-size account — including a
+ * freshly-allocated all-zero account, mirroring the on-chain
+ * `validate_discriminator` hardening. Byte-offset safe (decodes from a
+ * sub-array view of a larger buffer).
+ */
+export function decodeBuybackState(data: Uint8Array): BuybackState | null {
+  if (data.length !== BUYBACK_STATE_ACCOUNT_SIZE) return null;
+  if (data[0] !== 1) return null; // is_initialized
+  if (!bytesEqual(data.slice(176, 184), BUYBACK_STATE_DISCRIMINATOR)) {
+    return null;
+  }
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const settledIdRing: bigint[] = [];
+  for (let i = 0; i < SETTLED_ID_RING_LEN; i++) {
+    settledIdRing.push(view.getBigUint64(40 + i * 8, true));
+  }
+  return {
+    bump: data[1],
+    settleDisabled: data[2] === 1,
+    lastBuybackTs: view.getBigInt64(8, true),
+    buybackCount: view.getBigUint64(16, true),
+    drainThisYear: view.getBigUint64(24, true),
+    lastYearResetTs: view.getBigInt64(32, true),
+    settledIdRing,
+    settledIdHead: view.getBigUint64(168, true),
+    version: data[184],
+  };
+}
+
 /** Byte-array equality (length + content). */
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;

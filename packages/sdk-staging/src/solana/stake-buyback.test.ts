@@ -24,6 +24,10 @@ import {
   BUYBACK_CONFIG_ACCOUNT_SIZE,
   BUYBACK_CONFIG_HEADER_LEN,
   BUYBACK_CONFIG_DISCRIMINATOR,
+  decodeBuybackState,
+  BUYBACK_STATE_ACCOUNT_SIZE,
+  BUYBACK_STATE_DISCRIMINATOR,
+  SETTLED_ID_RING_LEN,
 } from "./stake-buyback.js";
 
 // Fixed pubkeys for reproducible PDA derivation tests. Programmatically
@@ -379,5 +383,84 @@ describe("decodeBuybackConfigAccount (full 264-byte account)", () => {
   it("pins the documented header length and account size", () => {
     expect(BUYBACK_CONFIG_HEADER_LEN).toBe(8);
     expect(BUYBACK_CONFIG_ACCOUNT_SIZE).toBe(264);
+  });
+});
+
+describe("decodeBuybackState (full 304-byte account)", () => {
+  // Build a full account against the frozen offsets, independent of any encoder.
+  function stateData(
+    opts: { initialized?: boolean; goodDisc?: boolean } = {},
+  ): Uint8Array {
+    const { initialized = true, goodDisc = true } = opts;
+    const out = new Uint8Array(BUYBACK_STATE_ACCOUNT_SIZE);
+    const view = new DataView(out.buffer);
+    if (initialized) out[0] = 1; // is_initialized
+    out[1] = 253; // bump
+    out[2] = 1; // settle_disabled = true
+    view.setBigInt64(8, 1_700_000_000n, true); // last_buyback_ts
+    view.setBigUint64(16, 42n, true); // buyback_count
+    view.setBigUint64(24, 1_000_000n, true); // drain_this_year
+    view.setBigInt64(32, 1_699_000_000n, true); // last_year_reset_ts
+    for (let i = 0; i < SETTLED_ID_RING_LEN; i++) {
+      view.setBigUint64(40 + i * 8, BigInt(100 + i), true); // ring entries
+    }
+    view.setBigUint64(168, 3n, true); // settled_id_head
+    if (goodDisc) out.set(BUYBACK_STATE_DISCRIMINATOR, 176);
+    out[184] = 1; // version
+    return out;
+  }
+
+  it("decodes all fields from a valid full account", () => {
+    const st = decodeBuybackState(stateData());
+    if (st === null) throw new Error("expected a decoded state");
+    expect(st.bump).toBe(253);
+    expect(st.settleDisabled).toBe(true);
+    expect(st.lastBuybackTs).toBe(1_700_000_000n);
+    expect(st.buybackCount).toBe(42n);
+    expect(st.drainThisYear).toBe(1_000_000n);
+    expect(st.lastYearResetTs).toBe(1_699_000_000n);
+    expect(st.settledIdRing).toHaveLength(SETTLED_ID_RING_LEN);
+    expect(st.settledIdRing[0]).toBe(100n);
+    expect(st.settledIdRing[15]).toBe(115n);
+    expect(st.settledIdHead).toBe(3n);
+    expect(st.version).toBe(1);
+  });
+
+  it("decodes settleDisabled = false when the byte is 0", () => {
+    const data = stateData();
+    data[2] = 0;
+    const st = decodeBuybackState(data);
+    expect(st?.settleDisabled).toBe(false);
+  });
+
+  it("returns null for a zeroed (uninitialized) account", () => {
+    expect(decodeBuybackState(new Uint8Array(BUYBACK_STATE_ACCOUNT_SIZE))).toBeNull();
+  });
+
+  it("returns null when is_initialized != 1", () => {
+    expect(decodeBuybackState(stateData({ initialized: false }))).toBeNull();
+  });
+
+  it("returns null on a discriminator mismatch", () => {
+    expect(decodeBuybackState(stateData({ goodDisc: false }))).toBeNull();
+  });
+
+  it("returns null on the wrong account size", () => {
+    expect(decodeBuybackState(new Uint8Array(303))).toBeNull();
+    expect(decodeBuybackState(new Uint8Array(305))).toBeNull();
+  });
+
+  it("decodes correctly from a non-zero-byteOffset view", () => {
+    const PREFIX = 5;
+    const payload = stateData();
+    const backing = new Uint8Array(PREFIX + payload.length);
+    backing.set(payload, PREFIX);
+    const viewSlice = backing.subarray(PREFIX, PREFIX + payload.length);
+    expect(viewSlice.byteOffset).toBe(PREFIX);
+    const st = decodeBuybackState(viewSlice);
+    if (st === null) throw new Error("expected a decoded state");
+    expect(st.buybackCount).toBe(42n);
+    expect(st.lastBuybackTs).toBe(1_700_000_000n);
+    expect(st.settledIdRing[1]).toBe(101n);
   });
 });
