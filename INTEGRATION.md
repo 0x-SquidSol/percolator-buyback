@@ -122,3 +122,36 @@ Caller-side notes (handler concern, not file content):
 Verification: `npx tsc --noEmit` (lint via the destination's `tsc --noEmit` script) and `npx vitest run` (the encoder, PDA, error-map, and event-parser suites) pass in `packages/sdk-staging/`. Tests cover byte layout determinism, encoder boundaries (negative roundTripId, u64::MAX), PDA seed-string sentinels, event field-order regressions, and the realized-price ratio divide-by-zero saturation (`u128::MAX`). The staged SDK uses the protocol-fee-funded naming throughout — `EmergencyDrainTreasury`, `deriveBuybackTreasury` (seed `buyback_treasury`), the seven-variant treasury blocker set (with `BelowTreasuryFloor` / `AutoPausedUnderStress` / `ReserveTopUpPending`, and no insurance-ratio variants), and the `treasury_balance_before` / `reserve_topup` event fields — matching the on-chain `dcccrypto/percolator-stake` structs byte-for-byte. It also ships the full-account decoders (`decodeBuybackConfigAccount`, `decodeBuybackState`) and the discriminator-routed event decoder (`decodeBuybackEvent`).
 
 Transfer record: not yet merged.
+
+## `dcccrypto/percolator-keeper`
+
+**Status:** staged — awaiting transfer.
+
+The keeper additions cover the cranker's buyback path: an eligibility probe that simulates `trigger_buyback` and classifies the result, the idempotent round-trip state machine, and the AMM-upgrade integrity watch. Built and tested in [`packages/keeper-staging/`](packages/keeper-staging/); the integrator copies the `src/` files into the destination keeper (each file's header names its destination path). The keeper imports the buyback symbols from `@percolatorct/sdk` (the SDK entry above) — path-aliased to `sdk-staging` here, resolving to the real dep at the destination.
+
+Steps:
+
+1. `src/services/buyback.ts` — `probeEligibility`: builds a `trigger_buyback` simulation, classifies the `simulateTransaction` response into `would-fire` / `blocked` / `not-live` / `rpc-error`, and decodes the gate-failure reason. **Blocker decode is base-28:** the probe reads the structured `InstructionError` `Custom` code and maps `Custom(28 + discriminant)` → the `BuybackBlocker` name via the SDK's order-locked `parseBuybackBlockerName` (the on-chain `StakeError::Buyback*` block — see the stake-program entry). Reconfirm `28` is the base against the on-chain `error.rs` at transfer. The simulation's account list is stubbed until `trigger_buyback`'s canonical accounts land (the data byte is already real, from `encodeStakeTriggerBuyback`).
+2. `src/lib/round-trip.ts` — the idempotent round-trip state machine (stages triggered → converted → bought → liquidity_added → lp_burned → settled; `pendingLeg` gives the resume point after a crash; `completeLeg` rejects out-of-order and re-completed legs — the anti-double-spend guard). Pure, no external dependency.
+3. `src/lib/amm-integrity.ts` — `checkAmmIntegrity`: derives the AMM's ProgramData account, validates loader-owner + ProgramData variant, sha256s its bytes, and compares to `BuybackConfig.amm_program_data_sha256` (`intact` / `drifted` / `wrong-owner` / `malformed` / `missing` / `rpc-error`). The off-chain early-warning that mirrors the on-chain settle sha-pin; reads at `confirmed` commitment by default.
+
+Per-file transfer notes: replace the staging `../lib/log.js` import with the destination's logger (`log.ts` is staging-only, with a post-transfer grep guard); the swap/submit legs (real account lists, PumpSwap/Jupiter shapes) are deferred until the on-chain handlers land.
+
+Verification: `pnpm -C packages/keeper-staging lint` (`tsc --noEmit`) and `pnpm -C packages/keeper-staging test` (vitest) pass — the classifier outcomes, the state-machine transitions/guards, and the AMM-integrity verdicts are covered.
+
+Transfer record: not yet merged.
+
+## `dcccrypto/percolator-indexer`
+
+**Status:** staged — awaiting transfer.
+
+The indexer additions cover the buyback's observability (required at T+0 per the design): the per-market and protocol-wide metrics aggregator and the transaction-log → event router that feeds it. Built and tested in [`packages/indexer-staging/`](packages/indexer-staging/). The destination indexer is a Hono + Supabase service; only the **pure aggregation + decode logic** is staged — the HTTP / DB layer is destination-specific and is NOT mirrored. The aggregator consumes the buyback event types from `@percolatorct/sdk` (the SDK entry above).
+
+Steps:
+
+1. `src/aggregate.ts` — the metrics reducer over decoded events: cumulative LP-burned (the permanent-liquidity proxy), locked-liquidity base units (token + pair side), reserve-first top-ups credited to stakers, and trigger/settle counts, per market and protocol-wide. `bigint` throughout; `realized_token_per_pair` is never summed and its `u128::MAX` divide-by-zero sentinel is filtered via the SDK's `isRealizedTokenPerPairSentinel`.
+2. `src/decode-logs.ts` — `decodeBuybackEventsFromLogs`: extracts each `Program data:` chunk from a transaction's logs, base64-decodes it, and routes through the SDK's `decodeBuybackEvent` (skipping non-buyback chunks). Feeds straight into `aggregate`. At the destination, wrap per-transaction so one corrupt event chunk cannot halt the pipeline.
+
+Verification: `pnpm -C packages/indexer-staging lint` (`tsc --noEmit`) and `pnpm -C packages/indexer-staging test` (vitest) pass — the aggregation (incl. bigint precision and sentinel handling) and the log-routing are covered.
+
+Transfer record: not yet merged.
