@@ -149,6 +149,12 @@ const BUYBACK_ERROR_BASE = 28;
  * `parseBuybackBlockerName`, which returns `null` for any code outside the
  * canonical `0..6` (i.e. any non-buyback `StakeError`, which then falls through
  * to the not-live / rpc-error branches).
+ *
+ * The probe submits a SINGLE-instruction transaction, so the failing
+ * instruction is unambiguously the buyback ix and the `Custom` code is its own.
+ * If the destination ever bundles `trigger_buyback` with other instructions
+ * (e.g. a ComputeBudget prefix), verify the `InstructionError` index against the
+ * buyback ix's position before attributing a `Custom` code to the gate.
  */
 function extractBlocker(err: unknown): string | null {
   const code = customErrorCode(err);
