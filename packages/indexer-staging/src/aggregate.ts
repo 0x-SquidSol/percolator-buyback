@@ -35,7 +35,13 @@ import {
   isRealizedTokenPerPairSentinel,
   type BuybackTriggered,
   type LiquidityLocked,
+  type BuybackEvent,
 } from "@percolatorct/sdk";
+
+// Re-exported so the decoded-event shape has a single source of truth: the
+// SDK's `decodeBuybackEvent` produces exactly this, and the indexer's
+// log->event router feeds it straight into `aggregate`.
+export type { BuybackEvent };
 
 /** Per-market rollup. All `bigint` sums are exact (no Number coercion). */
 export interface MarketMetrics {
@@ -76,11 +82,6 @@ export interface BuybackMetrics {
   /** Keyed by `tokenMint` base58. */
   perMarket: Map<string, MarketMetrics>;
 }
-
-/** A decoded event tagged for the mixed-stream {@link aggregate} reducer. */
-export type BuybackEvent =
-  | { kind: "triggered"; event: BuybackTriggered }
-  | { kind: "locked"; event: LiquidityLocked };
 
 /** A fresh, zeroed accumulator. */
 export function createMetrics(): BuybackMetrics {
