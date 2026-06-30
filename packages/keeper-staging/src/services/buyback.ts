@@ -15,37 +15,19 @@
  *      Per the `lib/log.ts` post-transfer grep guard, no
  *      `"../lib/log.js"` reference may survive in the destination's
  *      `src/services/`.
- *   2. Drop the local `buildStakeTriggerBuybackIxStub` helper. The
- *      data bytes already come from `encodeStakeTriggerBuyback()` in
- *      `@percolatorct/sdk` and carry over as-is. Inline the real
- *      account-list construction at the call site (using the stake
- *      program ID and the SDK's `deriveBuybackState` /
- *      `deriveBuybackTreasury` / `deriveBuybackConfig` PDA helpers), or
- *      forward to a destination-side helper if the keeper repo prefers
- *      that shape. The classification logic, log shapes, and data bytes
- *      do not change.
+ *   2. `stakeProgramId` becomes optional with the SDK's
+ *      `getStakeProgramId()` default, and the local `deriveStakePool`
+ *      helper is dropped for the SDK's `deriveStakePool(slab)`
+ *      (`sdk-staging` carries only the buyback additions, so it is
+ *      mirrored locally here). The account-list construction, classifier,
+ *      log shapes, and data bytes carry over unchanged.
  *
- * **What's stubbed today, what isn't:** the data byte the probe
- * sends to `simulateTransaction` is real — sourced from
- * `encodeStakeTriggerBuyback()` in `@percolatorct/sdk`, so the
- * on-wire discriminator matches what the destination's stake
- * program will dispatch on. What remains a placeholder is the
- * **account list** plus the **program ID**; the destination's
- * `trigger_buyback` handler in `dcccrypto/percolator-stake` hasn't
- * pinned its canonical accounts yet (`PROPOSAL.md` §11 explicitly
- * defers "precise account layouts, error codes, and event field
- * tables ... as each instruction lands in the implementing
- * repos"). Tests mock the simulate response
- * directly, so the four outcome paths (`would-fire`, `blocked`,
- * `rpc-error`, `not-live`) are exercised regardless of the
- * placeholder accounts. When the on-chain handler lands, the
- * remaining swap is scoped: drop the local stub function, then
- * either inline the real account-list construction at the call
- * site (using the stake program ID + the existing PDA derivations
- * `deriveBuybackState` / `deriveBuybackTreasury` / `deriveBuybackConfig` from the SDK) or
- * forward to a destination-side helper if the keeper repo prefers
- * that shape. The classifier, log shapes, and data bytes do not
- * move.
+ * **The probe sends the real instruction.** The data byte comes from
+ * `encodeStakeTriggerBuyback()` and the account list is the canonical layout
+ * the on-chain `process_trigger_buyback` handler pins (see
+ * `buildStakeTriggerBuybackIx`). Tests mock the `simulateTransaction` response
+ * directly, so the four outcome paths (`would-fire`, `blocked`, `rpc-error`,
+ * `not-live`) are exercised without a live RPC.
  */
 
 import {
@@ -60,6 +42,9 @@ import {
 import {
   encodeStakeTriggerBuyback,
   parseBuybackBlockerName,
+  deriveBuybackConfig,
+  deriveBuybackState,
+  deriveBuybackTreasury,
 } from "@percolatorct/sdk";
 import { log } from "../lib/log.js";
 
@@ -91,36 +76,62 @@ export type EligibilityResult =
   | { outcome: "not-live" }
   | { outcome: "rpc-error"; error: string };
 
+/** UTF-8 encoder for PDA seed strings. */
+const TEXT = new TextEncoder();
+
 /**
- * Stub `trigger_buyback` instruction. The DATA bytes are real —
- * sourced from `encodeStakeTriggerBuyback()` in `@percolatorct/sdk`,
- * so the on-wire discriminator that hits the validator is the same
- * byte the destination's stake program will dispatch on. The
- * ACCOUNT LIST is still a placeholder until the destination's
- * `trigger_buyback` handler in `dcccrypto/percolator-stake` defines
- * its canonical accounts. Per the protocol-fee-funded design
- * (INTEGRATION.md `## dcccrypto/percolator-stake` step 4) the eventual
- * list will read: `BuybackTreasury` (writable — the slice is reserved
- * here), `BuybackState` PDA (writable, stamp), `BuybackConfig` PDA
- * (readable — the bound token/pool/pair), the market account (readable,
- * for exposure + health), cranker (signer, fee payer). No insurance,
- * vault, or LP account is involved, and `Clock` is read via syscall,
- * not passed as an account. At that landing, the integrator drops this
- * whole helper and replaces the call site with the real account-list
- * construction; the data bytes (and the `encodeStakeTriggerBuyback`
- * import) carry over unchanged.
- *
- * `programId` points at the System Program — also a placeholder. A
- * real RPC against this stub would respond with a malformed-ix
- * error; tests mock `simulateTransaction` directly so all four
- * outcome paths land regardless of the on-chain dispatch.
+ * Derive the stake-pool PDA for a slab — `[b"stake_pool", slab]`. The
+ * destination SDK exports `deriveStakePool`; `sdk-staging` carries only the
+ * buyback additions, so it is mirrored here for staging. **At transfer:** drop
+ * this helper and use the SDK's `deriveStakePool(slab)`.
  */
-function buildStakeTriggerBuybackIxStub(
-  payer: PublicKey,
+function deriveStakePool(slab: PublicKey, stakeProgramId: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [TEXT.encode("stake_pool"), slab.toBytes()],
+    stakeProgramId,
+  )[0];
+}
+
+/**
+ * Build the `trigger_buyback` instruction. The account list is the canonical
+ * layout pinned by the on-chain `process_trigger_buyback` handler in
+ * `dcccrypto/percolator-stake`:
+ *
+ *   0. `[]`         pool PDA (`deriveStakePool(slab)`)
+ *   1. `[]`         market account (the slab — `market.key == pool.slab`)
+ *   2. `[]`         `BuybackConfig` PDA (the bound token/pool/pair)
+ *   3. `[writable]` `BuybackState` PDA (lazy-init + cooldown stamp)
+ *   4. `[]`         `BuybackTreasury` token account (balance read; NOT writable
+ *                   at trigger — the slice is only reserved in state here)
+ *   5. `[signer]`   cranker (fee payer; pays state rent on the first trigger)
+ *   6. `[]`         System program (lazy-init)
+ *
+ * No insurance, vault, or LP account; `Clock` is read via syscall on-chain, not
+ * passed as an account. The DATA byte comes from `encodeStakeTriggerBuyback()`.
+ *
+ * **At transfer:** `stakeProgramId` becomes optional with the SDK's
+ * `getStakeProgramId()` default, and `deriveStakePool` resolves to the SDK's.
+ */
+function buildStakeTriggerBuybackIx(
+  cranker: PublicKey,
+  slab: PublicKey,
+  stakeProgramId: PublicKey,
 ): TransactionInstruction {
+  const pool = deriveStakePool(slab, stakeProgramId);
+  const config = deriveBuybackConfig(pool, stakeProgramId)[0];
+  const state = deriveBuybackState(pool, stakeProgramId)[0];
+  const treasury = deriveBuybackTreasury(pool, stakeProgramId)[0];
   return new TransactionInstruction({
-    programId: SystemProgram.programId,
-    keys: [{ pubkey: payer, isSigner: true, isWritable: true }],
+    programId: stakeProgramId,
+    keys: [
+      { pubkey: pool, isSigner: false, isWritable: false },
+      { pubkey: slab, isSigner: false, isWritable: false },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: state, isSigner: false, isWritable: true },
+      { pubkey: treasury, isSigner: false, isWritable: false },
+      { pubkey: cranker, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
     data: Buffer.from(encodeStakeTriggerBuyback()),
   });
 }
@@ -227,23 +238,24 @@ function classifySim(sim: SimulatedTransactionResponse): EligibilityResult {
 }
 
 /**
- * Run the eligibility probe for a single slab. Builds a stub-encoded
- * `stake_trigger_buyback` transaction, asks the RPC to simulate it,
- * and emits one structured log line for the outcome. Always returns
- * an `EligibilityResult` — never throws (RPC faults become
- * `rpc-error` results so the caller can decide on retry vs. skip
- * without a try/catch wrapper at every probe site).
+ * Run the eligibility probe for a single slab. Builds the `trigger_buyback`
+ * transaction (real account list — see `buildStakeTriggerBuybackIx`), asks the
+ * RPC to simulate it, and emits one structured log line for the outcome. Always
+ * returns an `EligibilityResult` — never throws (RPC faults become `rpc-error`
+ * results so the caller can decide on retry vs. skip without a try/catch wrapper
+ * at every probe site).
  */
 export async function probeEligibility(
   connection: Connection,
   slab: PublicKey,
   payer: PublicKey,
+  stakeProgramId: PublicKey,
 ): Promise<EligibilityResult> {
   const slabStr = slab.toBase58();
 
   let sim: SimulatedTransactionResponse;
   try {
-    const ix = buildStakeTriggerBuybackIxStub(payer);
+    const ix = buildStakeTriggerBuybackIx(payer, slab, stakeProgramId);
     const message = new TransactionMessage({
       payerKey: payer,
       recentBlockhash: PublicKey.default.toBase58(),

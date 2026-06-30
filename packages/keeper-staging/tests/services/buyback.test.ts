@@ -23,6 +23,12 @@ import { probeEligibility } from "../../src/services/buyback.js";
 // readable in failure output.
 const SLAB = new PublicKey("So11111111111111111111111111111111111111112");
 const PAYER = PublicKey.default;
+// Any valid program id works — the probe's account list is mocked away by the
+// simulateTransaction stub, so this only needs to be a valid pubkey. The
+// percolator-stake mainnet id keeps the PDA derivations realistic.
+const STAKE_PROGRAM_ID = new PublicKey(
+  "DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F",
+);
 
 /**
  * Build a `Connection`-shaped object whose only used method is
@@ -43,7 +49,7 @@ describe("probeEligibility", () => {
     const conn = mockConnection({ err: null, logs: [] });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result).toEqual({ outcome: "would-fire", slice: "0" });
       expect(spy).toHaveBeenCalledWith(
         "eligibility probe would-fire",
@@ -68,7 +74,7 @@ describe("probeEligibility", () => {
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result).toEqual({ outcome: "blocked", blocker: "CooldownActive" });
       expect(spy).toHaveBeenCalledWith(
         "eligibility probe blocked",
@@ -91,7 +97,7 @@ describe("probeEligibility", () => {
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result).toEqual({
         outcome: "blocked",
         blocker: "BelowTreasuryFloor",
@@ -112,7 +118,7 @@ describe("probeEligibility", () => {
     });
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result.outcome).toBe("rpc-error");
     } finally {
       spy.mockRestore();
@@ -126,7 +132,7 @@ describe("probeEligibility", () => {
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result).toEqual({ outcome: "not-live" });
       expect(spy).toHaveBeenCalledWith(
         "eligibility probe not-live",
@@ -144,7 +150,7 @@ describe("probeEligibility", () => {
     });
     const spy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result).toEqual({ outcome: "not-live" });
     } finally {
       spy.mockRestore();
@@ -159,7 +165,7 @@ describe("probeEligibility", () => {
     } as unknown as Connection;
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result).toEqual({
         outcome: "rpc-error",
         error: "connection refused",
@@ -180,7 +186,7 @@ describe("probeEligibility", () => {
     });
     const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const result = await probeEligibility(conn, SLAB, PAYER);
+      const result = await probeEligibility(conn, SLAB, PAYER, STAKE_PROGRAM_ID);
       expect(result.outcome).toBe("rpc-error");
       if (result.outcome === "rpc-error") {
         expect(result.error).toContain("SomeFutureVariant");
