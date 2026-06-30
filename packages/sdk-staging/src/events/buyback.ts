@@ -228,3 +228,64 @@ export const REALIZED_TOKEN_PER_PAIR_SENTINEL: bigint = (1n << 128n) - 1n;
 export function isRealizedTokenPerPairSentinel(realizedTokenPerPair: bigint): boolean {
   return realizedTokenPerPair === REALIZED_TOKEN_PER_PAIR_SENTINEL;
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Event discriminators + framed-chunk router
+// ═══════════════════════════════════════════════════════════════
+//
+// percolator-stake emits each buyback event as ONE `sol_log_data` chunk of
+// `[8-byte discriminator][field section]`. The decoders above consume the field
+// section only; `decodeBuybackEvent` matches the leading discriminator, strips
+// it, and routes to the right decoder — the off-chain mirror of `event.rs`.
+
+/** Length of the leading event discriminator on each emitted log chunk. */
+export const EVENT_DISCRIMINATOR_LEN = 8;
+
+/** Discriminator prefix of a `BuybackTriggered` log chunk ("BBTRIGv1"). */
+export const BUYBACK_TRIGGERED_DISCRIMINATOR: Uint8Array =
+  new TextEncoder().encode("BBTRIGv1");
+
+/** Discriminator prefix of a `LiquidityLocked` log chunk ("BBLOCKv1"). */
+export const LIQUIDITY_LOCKED_DISCRIMINATOR: Uint8Array =
+  new TextEncoder().encode("BBLOCKv1");
+
+/**
+ * A decoded buyback event tagged by kind. The shape an event-stream consumer
+ * (e.g. the indexer aggregator) folds over.
+ */
+export type BuybackEvent =
+  | { kind: "triggered"; event: BuybackTriggered }
+  | { kind: "locked"; event: LiquidityLocked };
+
+/**
+ * Decode a full on-chain event chunk — `[8-byte discriminator][field bytes]`,
+ * the single `sol_log_data` chunk percolator-stake emits (already base64-decoded
+ * from the `Program data:` log line) — into a tagged {@link BuybackEvent}.
+ *
+ * Returns `null` when the discriminator matches neither buyback event (any other
+ * program-data log), so a consumer can scan a mixed log stream and skip
+ * unrelated chunks. A chunk whose discriminator DOES match but whose field
+ * section is the wrong length throws (via the underlying decoder) — a corrupt
+ * event is loud, not silently dropped.
+ */
+export function decodeBuybackEvent(data: Uint8Array): BuybackEvent | null {
+  if (data.length < EVENT_DISCRIMINATOR_LEN) return null;
+  const disc = data.subarray(0, EVENT_DISCRIMINATOR_LEN);
+  const fields = data.subarray(EVENT_DISCRIMINATOR_LEN);
+  if (bytesEqual(disc, BUYBACK_TRIGGERED_DISCRIMINATOR)) {
+    return { kind: "triggered", event: decodeBuybackTriggered(fields) };
+  }
+  if (bytesEqual(disc, LIQUIDITY_LOCKED_DISCRIMINATOR)) {
+    return { kind: "locked", event: decodeLiquidityLocked(fields) };
+  }
+  return null;
+}
+
+/** Byte-array equality (length + content). */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}

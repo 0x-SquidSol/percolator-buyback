@@ -16,6 +16,10 @@ import {
   decodeLiquidityLocked,
   REALIZED_TOKEN_PER_PAIR_SENTINEL,
   isRealizedTokenPerPairSentinel,
+  decodeBuybackEvent,
+  BUYBACK_TRIGGERED_DISCRIMINATOR,
+  LIQUIDITY_LOCKED_DISCRIMINATOR,
+  EVENT_DISCRIMINATOR_LEN,
 } from "./buyback.js";
 
 // ═══════════════════════════════════════════════════════════════
@@ -358,5 +362,91 @@ describe("REALIZED_TOKEN_PER_PAIR_SENTINEL / isRealizedTokenPerPairSentinel", ()
     const evt = decodeLiquidityLocked(data);
     expect(evt.realizedTokenPerPair).toBe(REALIZED_TOKEN_PER_PAIR_SENTINEL);
     expect(isRealizedTokenPerPairSentinel(evt.realizedTokenPerPair)).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// decodeBuybackEvent — discriminator-routed log chunk
+// ═══════════════════════════════════════════════════════════════
+
+describe("decodeBuybackEvent", () => {
+  function triggeredFields(): Uint8Array {
+    return concat(
+      i64LE(1_700_000_000n),
+      pubkeyBytes(TOKEN_PUBKEY),
+      u64LE(1_000_000_000n),
+      u64LE(250_000n),
+      u64LE(1_000_000n),
+      u128LE(500_000_000n),
+      pubkeyBytes(FIXED_PUBKEY),
+    );
+  }
+  function lockedFields(): Uint8Array {
+    return concat(
+      pubkeyBytes(TOKEN_PUBKEY),
+      u64LE(1_000_000n), // slice
+      u64LE(900_000n), // pairAcquired
+      u64LE(2_000_000n), // tokenBought
+      u64LE(800_000n), // pairPaired
+      u64LE(1_500_000n), // lpTokensBurned
+      pubkeyBytes(ANOTHER_PUBKEY), // poolPubkey
+      u128LE(3_000_000n), // realizedTokenPerPair
+    );
+  }
+
+  it("exposes the ASCII discriminators, distinct, length 8", () => {
+    expect(EVENT_DISCRIMINATOR_LEN).toBe(8);
+    expect(new TextDecoder().decode(BUYBACK_TRIGGERED_DISCRIMINATOR)).toBe("BBTRIGv1");
+    expect(new TextDecoder().decode(LIQUIDITY_LOCKED_DISCRIMINATOR)).toBe("BBLOCKv1");
+    expect(Array.from(BUYBACK_TRIGGERED_DISCRIMINATOR)).not.toEqual(
+      Array.from(LIQUIDITY_LOCKED_DISCRIMINATOR),
+    );
+  });
+
+  it("routes a BuybackTriggered chunk and decodes its fields", () => {
+    const chunk = concat(BUYBACK_TRIGGERED_DISCRIMINATOR, triggeredFields());
+    expect(chunk.length).toBe(8 + BUYBACK_TRIGGERED_BYTE_LENGTH);
+    const out = decodeBuybackEvent(chunk);
+    expect(out?.kind).toBe("triggered");
+    if (out?.kind === "triggered") {
+      expect(out.event.timestamp).toBe(1_700_000_000n);
+      expect(out.event.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58());
+      expect(out.event.buybackTreasury.toBase58()).toBe(FIXED_PUBKEY.toBase58());
+    }
+  });
+
+  it("routes a LiquidityLocked chunk and decodes its fields", () => {
+    const chunk = concat(LIQUIDITY_LOCKED_DISCRIMINATOR, lockedFields());
+    expect(chunk.length).toBe(8 + LIQUIDITY_LOCKED_BYTE_LENGTH);
+    const out = decodeBuybackEvent(chunk);
+    expect(out?.kind).toBe("locked");
+    if (out?.kind === "locked") {
+      expect(out.event.tokenMint.toBase58()).toBe(TOKEN_PUBKEY.toBase58());
+      expect(out.event.lpTokensBurned).toBe(1_500_000n);
+      expect(out.event.poolPubkey.toBase58()).toBe(ANOTHER_PUBKEY.toBase58());
+    }
+  });
+
+  it("returns null for an unknown discriminator", () => {
+    const chunk = concat(new TextEncoder().encode("OTHEREVT"), triggeredFields());
+    expect(decodeBuybackEvent(chunk)).toBeNull();
+  });
+
+  it("returns null for a chunk shorter than the discriminator", () => {
+    expect(decodeBuybackEvent(new Uint8Array(7))).toBeNull();
+  });
+
+  it("throws on a matched discriminator with a wrong-length field section", () => {
+    const chunk = concat(BUYBACK_TRIGGERED_DISCRIMINATOR, new Uint8Array(50));
+    expect(() => decodeBuybackEvent(chunk)).toThrow(/112 bytes/);
+  });
+
+  it("decodes from a non-zero-byteOffset view", () => {
+    const chunk = concat(BUYBACK_TRIGGERED_DISCRIMINATOR, triggeredFields());
+    const backing = new Uint8Array(4 + chunk.length);
+    backing.set(chunk, 4);
+    const view = backing.subarray(4, 4 + chunk.length);
+    expect(view.byteOffset).toBe(4);
+    expect(decodeBuybackEvent(view)?.kind).toBe("triggered");
   });
 });
